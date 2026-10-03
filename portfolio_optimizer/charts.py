@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from . import analytics as an
-from .config import label_for
+from .config import STRATEGIES, label_for
 from .optimizer import efficient_frontier, random_portfolios
 from .report import PortfolioReport
 
@@ -83,16 +83,35 @@ def allocation_bars(r: PortfolioReport) -> go.Figure:
     order = r.target.weights.sort_values().index
     names = _names(order)
     fig = go.Figure()
+    # Resampled 10–90% ranges apply to the full move; skip them when rebalancing partially.
+    show_range = r.resample is not None and r.settings.rebalance_intensity >= 1
     for name, w, color in (("Current", r.current.weights, ROLE["Current"]),
                            ("Target", r.target.weights, ROLE["Target"])):
         vals = w[order].to_numpy()
+        error = None
+        hover = "%{y}<br>" + name + ": %{x:.1%}<extra></extra>"
+        if name == "Target" and show_range:
+            lo, hi = r.resample.low[order].to_numpy(), r.resample.high[order].to_numpy()
+            error = dict(type="data", array=np.clip(hi - vals, 0, None), arrayminus=np.clip(vals - lo, 0, None),
+                         color=INK_2, thickness=1.2, width=4)
+            hover = ("%{y}<br>Target: %{x:.1%}<br>Likely range: %{customdata[0]:.0%}–%{customdata[1]:.0%}"
+                     "<extra></extra>")
+        label_here = not (name == "Target" and show_range)
         fig.add_bar(y=names, x=vals, name=name, orientation="h", marker=dict(color=color, cornerradius=4),
-                    text=[f"{v:.0%}" if v >= 0.01 else "" for v in vals], textposition="outside",
-                    textfont=dict(color=INK_2, size=11), cliponaxis=False,
-                    hovertemplate="%{y}<br>" + name + ": %{x:.1%}<extra></extra>")
+                    text=[f"{v:.0%}" if v >= 0.01 and label_here else "" for v in vals], textposition="outside",
+                    textfont=dict(color=INK_2, size=11), cliponaxis=False, error_x=error,
+                    customdata=np.c_[r.resample.low[order], r.resample.high[order]] if show_range else None,
+                    hovertemplate=hover)
     fig.update_layout(barmode="group", legend_traceorder="reversed")
     fig.update_xaxes(tickformat=".0%", showgrid=True)
-    _hbar_room(fig, max(r.current.weights.max(), r.target.weights.max()))
+    if show_range:
+        # Target bars are drawn second, so they sit in the upper half of each group.
+        for nm, v, hi in zip(names, r.target.weights[order], r.resample.high[order]):
+            if v >= 0.01:
+                fig.add_annotation(x=max(v, hi), y=nm, text=f"{v:.0%}", showarrow=False, xanchor="left", xshift=6,
+                                   yshift=9, font=dict(color=INK_2, size=11))
+    top = max(r.current.weights.max(), r.target.weights.max(), r.resample.high.max() if show_range else 0)
+    _hbar_room(fig, top)
     fig.update_yaxes(showgrid=False)
     return _base(fig, height=max(280, 64 * len(order) + 80))
 
@@ -184,10 +203,12 @@ def drawdown_chart(r: PortfolioReport) -> go.Figure:
 # Efficient frontier
 # --------------------------------------------------------------------------
 
-def frontier_chart(r: PortfolioReport) -> go.Figure:
+def frontier_chart(r: PortfolioReport, extra: dict[str, pd.Series] | None = None) -> go.Figure:
+    """``extra`` adds labelled points (e.g. a what-if mix) on top of the frontier."""
     s = r.settings
-    cloud = random_portfolios(r.mu, r.cov_annual, s.risk_free_rate)
-    front = efficient_frontier(r.mu, r.cov_annual, s.min_weight, s.max_weight)
+    cloud = r.cloud if r.cloud is not None else random_portfolios(r.mu, r.cov_annual, s.risk_free_rate)
+    front = r.frontier if r.frontier is not None else efficient_frontier(r.mu, r.cov_annual, s.min_weight,
+                                                                          s.max_weight)
 
     fig = go.Figure()
     fig.add_scatter(
@@ -225,6 +246,12 @@ def frontier_chart(r: PortfolioReport) -> go.Figure:
                         marker=dict(size=16, color=ROLE[name], symbol=sym, line=dict(color="#ffffff", width=2)),
                         hovertemplate=f"{name}<br>Vol %{{x:.1%}} · Return %{{y:.1%}}<br>Sharpe {res.sharpe:.2f}"
                                       "<extra></extra>")
+    for name, w in (extra or {}).items():
+        x = w.reindex(r.mu.index).fillna(0).to_numpy()
+        v, ret = an.portfolio_volatility(x, r.cov_annual), an.portfolio_return(x, r.mu)
+        fig.add_scatter(x=[v], y=[ret], mode="markers", name=name,
+                        marker=dict(size=15, color=SERIES[2], symbol="square", line=dict(color="#ffffff", width=2)),
+                        hovertemplate=f"{name}<br>Vol %{{x:.1%}} · Return %{{y:.1%}}<extra></extra>")
     x_max = max(cloud["volatility"].max(), vols.max(), r.current.volatility) * 1.1
     y_all = np.concatenate([cloud["return"], r.mu, [r.current.expected_return]])
     y_pad = (y_all.max() - y_all.min()) * 0.12
@@ -308,3 +335,39 @@ def backtest_weights_chart(r: PortfolioReport) -> go.Figure:
     fig.update_layout(barmode="stack", bargap=0.15)
     fig.update_yaxes(tickformat=".0%", range=[0, 1])
     return _base(fig, height=340)
+
+
+def strategy_bars(r: PortfolioReport) -> go.Figure:
+    """Small multiples: Sharpe, volatility and tail risk per strategy.
+
+    The selected strategy is blue, your current mix orange, the rest grey, so
+    the comparison reads at a glance without a colour per strategy.
+    """
+    c = r.comparison
+    chosen = STRATEGIES[r.settings.strategy]
+    names = list(c.index)[::-1]
+    colors = [ROLE["Current"] if n == "Your current mix" else SERIES[0] if n == chosen else "#c3cad5" for n in names]
+    panels = [("Sharpe", "Sharpe ratio ↑", lambda v: f"{v:.2f}"),
+              ("Volatility", "Volatility ↓", lambda v: f"{v:.1%}"),
+              ("CVaR 95% (daily)", "Worst-5%-day loss ↓", lambda v: f"{v:.2%}")]
+    fig = make_subplots(rows=1, cols=3, shared_yaxes=True, horizontal_spacing=0.06,
+                        subplot_titles=[p[1] for p in panels])
+    for k, (col, _, fmt) in enumerate(panels, start=1):
+        vals = c.loc[names, col].to_numpy()
+        fig.add_bar(y=names, x=vals, orientation="h", marker=dict(color=colors, cornerradius=4), showlegend=False,
+                    customdata=[fmt(v) for v in vals], hovertemplate="%{y}: %{customdata}<extra></extra>",
+                    row=1, col=k)
+        # Labels sit right of the bar end (or of zero, for negatives) so they never hit the axis labels.
+        for nm, v in zip(names, vals):
+            fig.add_annotation(x=max(v, 0), y=nm, text=fmt(v), showarrow=False, xanchor="left", xshift=4,
+                               font=dict(color=INK_2, size=11), row=1, col=k)
+        lo, hi = min(vals.min(), 0), max(vals.max(), 0)
+        pad = (hi - lo) * 0.3
+        fig.update_xaxes(range=[lo - (pad if lo < 0 else 0), hi + pad], showticklabels=False,
+                         zeroline=True, zerolinecolor=AXIS, row=1, col=k)
+    for a in fig.layout.annotations[:3]:  # the subplot titles
+        a.update(font=dict(size=12, color=INK_2))
+    fig.update_yaxes(showgrid=False)
+    fig = _base(fig, height=max(260, 40 * len(names) + 80), legend=False)
+    fig.update_layout(margin=dict(t=40))
+    return fig
