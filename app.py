@@ -87,6 +87,7 @@ with st.sidebar:
         st.markdown("**Strategy**")
         strategy = st.selectbox("Optimise for", list(STRATEGIES), format_func=STRATEGIES.get,
                                 help="Max Sharpe: best return per unit of risk. Min volatility: smoothest ride. "
+                                     "Min tail risk: smallest average loss on the worst 5% of days. "
                                      "Risk parity: every holding contributes equal risk. Max diversification: "
                                      "holdings that offset each other.")
         max_w = st.slider("Max position size", 10, 100, 40, step=5, format="%d%%",
@@ -193,6 +194,7 @@ headline = (f"Shift toward {', '.join(x.label for x in recs if x.action in ('Buy
             f"Rebalance to cut volatility from {fmt_pct(cur.volatility)} to {fmt_pct(tgt.volatility)}."
             if strategy == "min_volatility" else
             "Rebalance so each holding pulls its weight on risk." if strategy == "risk_parity" else
+            "Rebalance to shrink your losses on the worst days." if strategy == "min_cvar" else
             "Rebalance toward holdings that offset each other.")
 if n_trades == 0:
     headline = "Your portfolio is already close to optimal. No trades needed."
@@ -235,7 +237,7 @@ with tabs[0]:
                        "text/csv", icon=":material/download:")
 
     if strategy != "risk_parity":
-        obj = {"max_sharpe": "Sharpe ratio", "min_volatility": "volatility (pp)",
+        obj = {"max_sharpe": "Sharpe ratio", "min_volatility": "volatility (pp)", "min_cvar": "daily CVaR (pp)",
                "max_diversification": "diversification ratio"}[strategy]
         st.html(f'<div class="section-title" style="margin-top:18px">Where the improvement comes from</div>'
                 f'<div class="section-sub">Each holding\'s exact share of the change in {obj}. '

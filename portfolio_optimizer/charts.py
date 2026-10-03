@@ -100,7 +100,7 @@ def allocation_bars(r: PortfolioReport) -> go.Figure:
 def contribution_bars(r: PortfolioReport) -> go.Figure:
     """Where the objective's improvement comes from (sums to the total)."""
     recs = sorted(r.recommendations, key=lambda x: x.contribution)
-    vol = r.settings.strategy == "min_volatility"
+    vol = r.settings.strategy in ("min_volatility", "min_cvar")
     vals = [x.contribution * (100 if vol else 1) for x in recs]
     good = [(v < 0) if vol else (v > 0) for v in vals]
     fmt = (lambda v: f"{v:+.2f} pp") if vol else (lambda v: f"{v:+.3f}")

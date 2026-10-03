@@ -1,14 +1,15 @@
-"""Long-only portfolio optimisation with position limits."""
+"""Long-only portfolio optimisation with position, asset-class and turnover limits."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize
+from scipy.optimize import linprog, minimize
 
 from . import analytics as an
+from .config import TRADING_DAYS
 
 
 @dataclass
@@ -20,7 +21,42 @@ class OptimizationResult:
     sharpe: float
 
 
-def _bounds_ok(n: int, lo: float, hi: float) -> None:
+@dataclass
+class Constraints:
+    """Everything the optimiser must respect besides "long-only, fully invested".
+
+    ``asset_classes`` maps ticker → class; ``class_cap`` limits each class's
+    total weight. ``max_turnover`` is one-way turnover (share of the portfolio
+    bought, equal to the share sold) measured from ``current``.
+    """
+
+    min_weight: float = 0.0
+    max_weight: float = 1.0
+    asset_classes: dict[str, str] = field(default_factory=dict)
+    class_cap: float | None = None
+    current: pd.Series | None = None
+    max_turnover: float | None = None
+
+    def class_groups(self, tickers) -> dict[str, list[int]]:
+        if self.class_cap is None or self.class_cap >= 1:
+            return {}
+        groups: dict[str, list[int]] = {}
+        for i, t in enumerate(tickers):
+            groups.setdefault(self.asset_classes.get(t, "Other"), []).append(i)
+        return groups
+
+    def turnover_active(self) -> bool:
+        return self.current is not None and self.max_turnover is not None and self.max_turnover < 1
+
+
+# --------------------------------------------------------------------------
+# Feasibility
+# --------------------------------------------------------------------------
+
+def check_feasible(tickers, c: Constraints) -> None:
+    """Raise a ValueError that says exactly which limit to loosen."""
+    n = len(tickers)
+    lo, hi = c.min_weight, c.max_weight
     if not 0 <= lo <= hi <= 1:
         raise ValueError("Weight limits must satisfy 0 ≤ min ≤ max ≤ 1.")
     if n * hi < 1 - 1e-9:
@@ -31,29 +67,146 @@ def _bounds_ok(n: int, lo: float, hi: float) -> None:
     if n * lo > 1 + 1e-9:
         raise ValueError(f"A {lo:.0%} floor on {n} assets needs more than 100% of the money.")
 
+    groups = c.class_groups(tickers)
+    if groups:
+        capacity = sum(min(c.class_cap, len(ix) * hi) for ix in groups.values())
+        if capacity < 1 - 1e-9:
+            raise ValueError(
+                f"With a {c.class_cap:.0%} cap on each of {len(groups)} asset classes you can only invest "
+                f"{capacity:.0%}. Raise the asset-class cap or add holdings from another class."
+            )
+        for name, ix in groups.items():
+            if len(ix) * lo > c.class_cap + 1e-9:
+                raise ValueError(f"The {lo:.0%} minimum per holding already exceeds the {c.class_cap:.0%} "
+                                 f"cap for {name}.")
 
-def _solve(objective, n: int, lo: float, hi: float, starts: list[np.ndarray]) -> np.ndarray:
-    cons = ({"type": "eq", "fun": lambda w: np.sum(w) - 1.0},)
-    bounds = [(lo, hi)] * n
+    if c.turnover_active():
+        need = min_feasible_turnover(tickers, c)
+        if need > c.max_turnover + 1e-6:
+            raise ValueError(
+                f"Your position and asset-class limits alone require trading at least {need:.0%} of the "
+                f"portfolio, above the {c.max_turnover:.0%} turnover limit. Raise the turnover limit."
+            )
+
+
+def min_feasible_turnover(tickers, c: Constraints) -> float:
+    """Smallest one-way turnover that brings ``c.current`` inside the limits (an LP)."""
+    n = len(tickers)
+    cur = c.current.reindex(tickers).fillna(0).to_numpy()
+    # variables: w (n), d (n) with d >= |w - cur|; minimise sum(d) / 2
+    cost = np.r_[np.zeros(n), np.full(n, 0.5)]
+    a_ub, b_ub = _linear_ub(tickers, c, n_extra=n)
+    eye = np.eye(n)
+    a_ub += [np.r_[eye[i], -eye[i]] for i in range(n)] + [np.r_[-eye[i], -eye[i]] for i in range(n)]
+    b_ub += list(cur) + list(-cur)
+    res = linprog(cost, A_ub=np.array(a_ub), b_ub=np.array(b_ub),
+                  A_eq=np.r_[np.ones(n), np.zeros(n)][None, :], b_eq=[1.0],
+                  bounds=[(c.min_weight, c.max_weight)] * n + [(0, None)] * n, method="highs")
+    return float(res.fun) if res.success else np.inf
+
+
+def _linear_ub(tickers, c: Constraints, n_extra: int = 0) -> tuple[list, list]:
+    """Asset-class caps as A_ub rows (padded with zeros for extra LP variables)."""
+    n = len(tickers)
+    rows, rhs = [], []
+    for ix in c.class_groups(tickers).values():
+        row = np.zeros(n + n_extra)
+        row[ix] = 1
+        rows.append(row)
+        rhs.append(c.class_cap)
+    return rows, rhs
+
+
+# --------------------------------------------------------------------------
+# Solvers
+# --------------------------------------------------------------------------
+
+def _slsqp_constraints(tickers, c: Constraints) -> list[dict]:
+    cons = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0, "jac": lambda w: np.ones_like(w)}]
+    for ix in c.class_groups(tickers).values():
+        cons.append({"type": "ineq", "fun": lambda w, ix=ix: c.class_cap - np.sum(w[ix])})
+    if c.turnover_active():
+        cur = c.current.reindex(tickers).fillna(0).to_numpy()
+        # Smooth |x| so SLSQP gets a usable gradient; error is < 1e-5 per asset.
+        cons.append({"type": "ineq",
+                     "fun": lambda w: 2 * c.max_turnover - np.sum(np.sqrt((w - cur) ** 2 + 1e-10))})
+    return cons
+
+
+def _starts(tickers, c: Constraints, k: int, seed: int = 0) -> list[np.ndarray]:
+    n = len(tickers)
+    lo, hi = c.min_weight, c.max_weight
+
+    def fix(w):
+        w = np.clip(w, lo, hi)
+        return w / w.sum()
+
+    starts = []
+    if c.current is not None:
+        starts.append(fix(c.current.reindex(tickers).fillna(0).to_numpy() + 1e-9))
+    starts.append(np.full(n, 1 / n))
+    rng = np.random.default_rng(seed)
+    starts += [fix(rng.dirichlet(np.ones(n))) for _ in range(max(k - len(starts), 0))]
+    return starts[:max(k, 1)]
+
+
+def _solve(objective, tickers, c: Constraints, starts: list[np.ndarray]) -> np.ndarray:
+    n = len(tickers)
+    cons = _slsqp_constraints(tickers, c)
+    bounds = [(c.min_weight, c.max_weight)] * n
     best, best_val = None, np.inf
     for x0 in starts:
         res = minimize(objective, x0, method="SLSQP", bounds=bounds, constraints=cons,
                        options={"maxiter": 500, "ftol": 1e-12})
-        if res.success or best is None:
-            val = objective(res.x)
-            if val < best_val:
-                best, best_val = res.x, val
-    w = np.clip(best, lo, hi)
+        feasible = all((con["fun"](res.x) >= -1e-6) if con["type"] == "ineq" else abs(con["fun"](res.x)) < 1e-6
+                       for con in cons)
+        val = objective(res.x)
+        if feasible and val < best_val:
+            best, best_val = res.x, val
+    if best is None:
+        raise ValueError("The optimiser could not satisfy all limits. Loosen the turnover or asset-class caps.")
+    w = np.clip(best, c.min_weight, c.max_weight)
     return w / w.sum()
 
 
-def _starts(n: int, lo: float, hi: float, seed: int = 0, k: int = 6) -> list[np.ndarray]:
-    rng = np.random.default_rng(seed)
-    starts = [np.full(n, 1 / n)]
-    for _ in range(k):
-        w = rng.dirichlet(np.ones(n))
-        starts.append(np.clip(w, lo, hi) / np.clip(w, lo, hi).sum())
-    return starts
+def _min_cvar(returns: pd.DataFrame, tickers, c: Constraints, level: float = 0.95) -> np.ndarray:
+    """Rockafellar–Uryasev linear program for minimum historical CVaR."""
+    r = returns[tickers].to_numpy()
+    t, n = r.shape
+    use_to = c.turnover_active()
+    n_d = n if use_to else 0
+    # variables: w (n), alpha (1), z (t), d (n_d)
+    nv = n + 1 + t + n_d
+    cost = np.zeros(nv)
+    cost[n] = 1.0
+    cost[n + 1:n + 1 + t] = 1 / ((1 - level) * t)
+
+    # z_t >= -r_t.w - alpha   ->   -r_t.w - alpha - z_t <= 0
+    a_loss = np.zeros((t, nv))
+    a_loss[:, :n] = -r
+    a_loss[:, n] = -1
+    a_loss[np.arange(t), n + 1 + np.arange(t)] = -1
+    rows, rhs = _linear_ub(tickers, c, n_extra=nv - n)
+    a_ub = [a_loss] + ([np.array(rows)] if rows else [])
+    b_ub = [np.zeros(t)] + ([np.array(rhs)] if rhs else [])
+    if use_to:
+        cur = c.current.reindex(tickers).fillna(0).to_numpy()
+        a_d = np.zeros((2 * n + 1, nv))
+        for i in range(n):
+            a_d[i, i], a_d[i, n + 1 + t + i] = 1, -1          # w - d <= cur
+            a_d[n + i, i], a_d[n + i, n + 1 + t + i] = -1, -1  # -w - d <= -cur
+        a_d[2 * n, n + 1 + t:] = 1                              # sum d <= 2 * turnover
+        a_ub.append(a_d)
+        b_ub.append(np.r_[cur, -cur, 2 * c.max_turnover])
+    a_eq = np.zeros((1, nv))
+    a_eq[0, :n] = 1
+    bounds = [(c.min_weight, c.max_weight)] * n + [(None, None)] + [(0, None)] * (t + n_d)
+    res = linprog(cost, A_ub=np.vstack(a_ub), b_ub=np.concatenate(b_ub), A_eq=a_eq, b_eq=[1.0],
+                  bounds=bounds, method="highs")
+    if not res.success:
+        raise ValueError("The tail-risk optimiser could not satisfy all limits. Loosen the turnover or caps.")
+    w = np.clip(res.x[:n], c.min_weight, c.max_weight)
+    return w / w.sum()
 
 
 def optimize(
@@ -63,35 +216,52 @@ def optimize(
     rf: float = 0.0,
     min_weight: float = 0.0,
     max_weight: float = 1.0,
+    *,
+    constraints: Constraints | None = None,
+    returns: pd.DataFrame | None = None,
+    n_starts: int = 7,
+    check: bool = True,
 ) -> OptimizationResult:
-    n = len(mu)
-    _bounds_ok(n, min_weight, max_weight)
+    """Optimise ``strategy`` under the limits.
+
+    ``constraints`` overrides ``min_weight``/``max_weight`` when given.
+    ``returns`` (daily) is required for ``min_cvar``.
+    """
+    tickers = list(mu.index)
+    c = constraints or Constraints(min_weight=min_weight, max_weight=max_weight)
+    if check:
+        check_feasible(tickers, c)
+    n = len(tickers)
     sigma = cov_annual.to_numpy()
     mu_v = mu.to_numpy()
     vols = np.sqrt(np.diag(sigma))
-    starts = _starts(n, min_weight, max_weight)
+    starts = _starts(tickers, c, n_starts)
 
-    if strategy == "max_sharpe":
-        def obj(w):
-            vol = np.sqrt(w @ sigma @ w)
-            return -(w @ mu_v - rf) / vol
-    elif strategy == "min_volatility":
-        def obj(w):
-            return w @ sigma @ w * 100
-    elif strategy == "risk_parity":
-        def obj(w):
-            rc = w * (sigma @ w)
-            return np.sum((rc / rc.sum() - 1 / n) ** 2) * 1e3
-        # Inverse-vol is the closed-form answer when correlations are equal.
-        inv = (1 / vols) / (1 / vols).sum()
-        starts = [np.clip(inv, min_weight, max_weight) / np.clip(inv, min_weight, max_weight).sum()] + starts
-    elif strategy == "max_diversification":
-        def obj(w):
-            return -(w @ vols) / np.sqrt(w @ sigma @ w)
+    if strategy == "min_cvar":
+        if returns is None:
+            raise ValueError("Minimum CVaR needs daily returns.")
+        w = _min_cvar(returns, tickers, c)
     else:
-        raise ValueError(f"Unknown strategy: {strategy}")
+        if strategy == "max_sharpe":
+            def obj(w):
+                return -(w @ mu_v - rf) / np.sqrt(w @ sigma @ w)
+        elif strategy == "min_volatility":
+            def obj(w):
+                return w @ sigma @ w * 100
+        elif strategy == "risk_parity":
+            def obj(w):
+                rc = w * (sigma @ w)
+                return np.sum((rc / rc.sum() - 1 / n) ** 2) * 1e3
+            # Inverse-vol is the closed-form answer when correlations are equal.
+            inv = (1 / vols) / (1 / vols).sum()
+            starts = [np.clip(inv, c.min_weight, c.max_weight) / np.clip(inv, c.min_weight, c.max_weight).sum()] + starts
+        elif strategy == "max_diversification":
+            def obj(w):
+                return -(w @ vols) / np.sqrt(w @ sigma @ w)
+        else:
+            raise ValueError(f"Unknown strategy: {strategy}")
+        w = _solve(obj, tickers, c, starts)
 
-    w = _solve(obj, n, min_weight, max_weight, starts)
     weights = pd.Series(w, index=mu.index)
     weights[weights.abs() < 1e-6] = 0.0
     weights /= weights.sum()
@@ -110,43 +280,112 @@ def evaluate(weights: pd.Series, mu: pd.Series, cov_annual: pd.DataFrame, rf: fl
     )
 
 
+# --------------------------------------------------------------------------
+# Robustness: resampled optimisation
+# --------------------------------------------------------------------------
+
+@dataclass
+class ResampleResult:
+    samples: pd.DataFrame  # one row of optimal weights per resampled history
+    mean: pd.Series  # Michaud-style averaged weights (feasible: the limits are convex)
+    low: pd.Series  # 10th percentile
+    high: pd.Series  # 90th percentile
+    held: pd.Series  # share of samples where the asset gets more than 1%
+
+    @property
+    def spread(self) -> pd.Series:
+        return self.high - self.low
+
+
+def block_bootstrap(returns: pd.DataFrame, rng: np.random.Generator, block: int = 21) -> pd.DataFrame:
+    """Resample whole blocks of consecutive days so volatility clusters survive."""
+    t = len(returns)
+    n_blocks = int(np.ceil(t / block))
+    starts = rng.integers(0, max(t - block, 1), size=n_blocks)
+    idx = np.concatenate([np.arange(s, s + block) for s in starts])[:t]
+    return returns.iloc[np.clip(idx, 0, t - 1)]
+
+
+def resample(
+    returns: pd.DataFrame,
+    strategy: str,
+    rf: float,
+    constraints: Constraints,
+    n_samples: int = 100,
+    mu_method: str = "bayes_stein",
+    seed: int = 7,
+) -> ResampleResult:
+    """Re-run the optimiser on ``n_samples`` bootstrapped histories.
+
+    A weight that swings wildly between samples is driven by noise in the
+    estimates; averaging the samples (Michaud resampling) gives a target
+    that is far less sensitive to that noise.
+    """
+    rng = np.random.default_rng(seed)
+    tickers = list(returns.columns)
+    check_feasible(tickers, constraints)
+    rows = []
+    for _ in range(n_samples):
+        sample = block_bootstrap(returns, rng)
+        cov = an.ledoit_wolf_covariance(sample)
+        mu = an.expected_returns(sample, cov, mu_method)
+        try:
+            res = optimize(mu, cov * TRADING_DAYS, strategy, rf, constraints=constraints, returns=sample,
+                           n_starts=2, check=False)
+        except ValueError:
+            continue
+        rows.append(res.weights)
+    if not rows:
+        raise ValueError("Resampling failed: no bootstrapped history produced a feasible portfolio.")
+    samples = pd.DataFrame(rows).reset_index(drop=True)
+    mean = samples.mean()
+    return ResampleResult(samples, mean / mean.sum(), samples.quantile(0.10), samples.quantile(0.90),
+                          (samples > 0.01).mean())
+
+
+# --------------------------------------------------------------------------
+# Frontier & cloud
+# --------------------------------------------------------------------------
+
 def efficient_frontier(
     mu: pd.Series, cov_annual: pd.DataFrame, min_weight: float = 0.0, max_weight: float = 1.0,
-    points: int = 40,
+    points: int = 40, constraints: Constraints | None = None,
 ) -> pd.DataFrame:
-    """Minimum-volatility portfolio for a grid of target returns."""
-    n = len(mu)
-    _bounds_ok(n, min_weight, max_weight)
+    """Minimum-volatility portfolio for a grid of target returns.
+
+    Turnover limits are ignored here: the frontier shows what the limits on
+    the *portfolio* allow, wherever you start from.
+    """
+    tickers = list(mu.index)
+    c = constraints or Constraints(min_weight=min_weight, max_weight=max_weight)
+    c = Constraints(c.min_weight, c.max_weight, c.asset_classes, c.class_cap)  # drop turnover
+    check_feasible(tickers, c)
+    n = len(tickers)
     sigma = cov_annual.to_numpy()
     mu_v = mu.to_numpy()
 
-    w_min = optimize(mu, cov_annual, "min_volatility", 0, min_weight, max_weight).weights.to_numpy()
-    # Highest achievable return under the caps: fill the best assets first.
-    order = np.argsort(-mu_v)
-    w_max = np.full(n, min_weight)
-    room = 1 - w_max.sum()
-    for i in order:
-        add = min(max_weight - w_max[i], room)
-        w_max[i] += add
-        room -= add
-    lo_ret, hi_ret = float(w_min @ mu_v), float(w_max @ mu_v)
+    w_min = optimize(mu, cov_annual, "min_volatility", 0, constraints=c).weights.to_numpy()
+    # Highest achievable return under the limits (an LP).
+    rows, rhs = _linear_ub(tickers, c)
+    lp = linprog(-mu_v, A_ub=np.array(rows) if rows else None, b_ub=np.array(rhs) if rhs else None,
+                 A_eq=np.ones((1, n)), b_eq=[1.0], bounds=[(c.min_weight, c.max_weight)] * n, method="highs")
+    lo_ret = float(w_min @ mu_v)
+    hi_ret = float(-lp.fun) if lp.success else lo_ret
 
-    rows = []
+    base = _slsqp_constraints(tickers, c)
+    out = []
     prev = w_min
     for target in np.linspace(lo_ret, hi_ret, points):
-        cons = (
-            {"type": "eq", "fun": lambda w: np.sum(w) - 1.0},
-            {"type": "eq", "fun": lambda w, t=target: w @ mu_v - t},
-        )
+        cons = base + [{"type": "eq", "fun": lambda w, t=target: w @ mu_v - t}]
         res = minimize(lambda w: w @ sigma @ w * 100, prev, method="SLSQP",
-                       bounds=[(min_weight, max_weight)] * n, constraints=cons,
+                       bounds=[(c.min_weight, c.max_weight)] * n, constraints=cons,
                        options={"maxiter": 500, "ftol": 1e-12})
         if not res.success:
             continue
         prev = res.x
-        rows.append({"return": float(res.x @ mu_v), "volatility": float(np.sqrt(res.x @ sigma @ res.x)),
-                     **{t: float(x) for t, x in zip(mu.index, res.x)}})
-    return pd.DataFrame(rows)
+        out.append({"return": float(res.x @ mu_v), "volatility": float(np.sqrt(res.x @ sigma @ res.x)),
+                    **{t: float(x) for t, x in zip(tickers, res.x)}})
+    return pd.DataFrame(out)
 
 
 def random_portfolios(mu: pd.Series, cov_annual: pd.DataFrame, rf: float, n: int = 3000,
