@@ -215,6 +215,14 @@ def attribute_change(f, w0: np.ndarray, w1: np.ndarray, steps: int = 24, h: floa
     (path-integrated gradients), so the contributions sum exactly to the
     total change and each one reflects the whole move, not just the first
     step of it.
+
+    Because the weights always sum to 1, only budget-neutral directions
+    matter, and the raw partial derivatives can be shifted by any constant
+    without changing the total. We use the natural choice: the effect of
+    adding a little of an asset *funded pro rata from the whole portfolio*
+    (``grad_i - w @ grad``). For the Sharpe ratio this is exactly
+    ``(mu_i - rf - Sharpe * marginal_vol_i) / vol``. Without it, a large
+    position being cut would be charged for the risk-free leg of the ratio.
     """
     d = w1 - w0
     n = len(w0)
@@ -222,10 +230,12 @@ def attribute_change(f, w0: np.ndarray, w1: np.ndarray, steps: int = 24, h: floa
     s_grid = (np.arange(steps) + 0.5) / steps  # midpoint rule
     for s in s_grid:
         w = w0 + s * d
+        grad = np.empty(n)
         for i in range(n):
             e = np.zeros(n)
             e[i] = h
-            acc[i] += (f(w + e) - f(w - e)) / (2 * h)
+            grad[i] = (f(w + e) - f(w - e)) / (2 * h)
+        acc += grad - w @ grad / w.sum()
     contrib = d * acc / steps
     # Remove the tiny numerical residual so the parts add up exactly.
     total = f(w1) - f(w0)
