@@ -200,7 +200,7 @@ def strategy_objective(strategy: str, mu: pd.Series, cov_annual: pd.DataFrame, r
             raise ValueError("min_cvar needs daily returns")
         r = returns.to_numpy()
         return (lambda w: historical_cvar(w, r)), False
-    if strategy == "risk_parity":
+    if strategy in ("risk_parity", "hrp"):
         def concentration(w):
             rc = w * (sigma @ w)
             return float(np.sum((rc / rc.sum() - 1 / len(w)) ** 2))

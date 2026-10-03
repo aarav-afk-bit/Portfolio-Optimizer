@@ -56,6 +56,8 @@ Every holding gets reasons in four groups:
 - **Minimum tail risk (CVaR)**: smallest average loss on the worst 5% of days, solved exactly as a
   linear program (Rockafellar–Uryasev) on historical returns.
 - **Risk parity**: each holding contributes the same share of portfolio risk.
+- **Hierarchical risk parity (HRP)**: groups holdings that move together, then splits money between
+  groups by risk (López de Prado). It never inverts the covariance matrix, so noise hurts it less.
 - **Max diversification**: holdings whose swings offset each other.
 
 All are long-only and fully invested. A *rebalance intensity* slider lets you move part of the way
@@ -128,8 +130,8 @@ notebooks/                     Updated notebook + the original
 tests/                         pytest suite
 ```
 
-Run the tests with `pip install -r requirements-dev.txt && pytest`. The dev requirements include cvxpy
-and scikit-learn for the reference cross-checks; those tests are skipped if they're missing.
+Run the tests with `pip install -r requirements-dev.txt && pytest`. The dev requirements include cvxpy,
+scikit-learn and PyPortfolioOpt for the reference cross-checks; those tests are skipped if they're missing.
 
 ## Caveats
 

@@ -266,6 +266,7 @@ headline = (f"Shift toward {', '.join(x.label for x in recs if x.action in ('Buy
             f"Rebalance to cut volatility from {fmt_pct(cur.volatility)} to {fmt_pct(tgt.volatility)}."
             if strategy == "min_volatility" else
             "Rebalance so each holding pulls its weight on risk." if strategy == "risk_parity" else
+            "Spread money across groups of holdings by how risky each group is." if strategy == "hrp" else
             f"Rebalance to cut the average worst-day loss from {fmt_pct(r.comparison.loc['Your current mix', 'CVaR 95% (daily)'], 2)}"
             f" to {fmt_pct(an.historical_cvar(tgt.weights.to_numpy(), r.returns), 2)}." if strategy == "min_cvar" else
             "Rebalance toward holdings that offset each other.")
@@ -320,7 +321,7 @@ with TAB_ACTION:
         st.download_button("Trade list CSV", csv.to_csv(index=False), "rebalance_plan.csv",
                            "text/csv", icon=":material/download:", width="stretch")
 
-    if strategy != "risk_parity":
+    if strategy not in ("risk_parity", "hrp"):
         obj = {"max_sharpe": "Sharpe ratio", "min_volatility": "volatility (pp)", "min_cvar": "daily CVaR (pp)",
                "max_diversification": "diversification ratio"}[strategy]
         st.html(f'<div class="section-title" style="margin-top:18px">Where the improvement comes from</div>'

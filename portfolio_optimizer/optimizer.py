@@ -6,7 +6,9 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
+from scipy.cluster.hierarchy import leaves_list, linkage
 from scipy.optimize import linprog, minimize
+from scipy.spatial.distance import squareform
 
 from . import analytics as an
 from .config import TRADING_DAYS
@@ -254,6 +256,78 @@ def _max_sharpe_exact(mu: pd.Series, sigma: np.ndarray, rf: float, tickers, c: C
     return w / w.sum()
 
 
+def _cluster_order(cov: np.ndarray, linkage_method: str = "single") -> list[int]:
+    """Assets ordered so that highly correlated ones sit next to each other."""
+    std = np.sqrt(np.diag(cov))
+    corr = np.clip(cov / np.outer(std, std), -1, 1)
+    dist = np.sqrt(np.clip(0.5 * (1 - corr), 0, None))
+    np.fill_diagonal(dist, 0)
+    return [int(i) for i in leaves_list(linkage(squareform(dist, checks=False), method=linkage_method))]
+
+
+def _cluster_var(cov: np.ndarray, ix: list[int]) -> float:
+    """Variance of the inverse-variance portfolio of a cluster."""
+    sub = cov[np.ix_(ix, ix)]
+    ivp = 1 / np.diag(sub)
+    ivp /= ivp.sum()
+    return float(ivp @ sub @ ivp)
+
+
+def hrp_weights(cov: np.ndarray, linkage_method: str = "single") -> np.ndarray:
+    """Hierarchical Risk Parity (López de Prado, 2016).
+
+    Clusters assets by correlation distance, orders them so similar assets
+    sit together, then splits capital top-down between clusters in inverse
+    proportion to each cluster's variance. It never inverts the covariance
+    matrix, so it is far less sensitive to estimation noise than
+    mean-variance optimisation.
+    """
+    n = cov.shape[0]
+    if n == 1:
+        return np.ones(1)
+    w = np.ones(n)
+    clusters = [_cluster_order(cov, linkage_method)]
+    while clusters:
+        nxt = []
+        for cl in clusters:
+            if len(cl) < 2:
+                continue
+            left, right = cl[: len(cl) // 2], cl[len(cl) // 2:]
+            v_l, v_r = _cluster_var(cov, left), _cluster_var(cov, right)
+            alpha = 1 - v_l / (v_l + v_r)
+            w[left] *= alpha
+            w[right] *= 1 - alpha
+            nxt += [left, right]
+        clusters = nxt
+    return w / w.sum()
+
+
+def hrp_top_split(cov: np.ndarray, linkage_method: str = "single") -> tuple[list[int], list[int], float]:
+    """The first split HRP makes: (left cluster, right cluster, share given to left)."""
+    n = cov.shape[0]
+    if n < 2:
+        return list(range(n)), [], 1.0
+    order = _cluster_order(cov, linkage_method)
+    left, right = order[: n // 2], order[n // 2:]
+    v_l, v_r = _cluster_var(cov, left), _cluster_var(cov, right)
+    return left, right, 1 - v_l / (v_l + v_r)
+
+
+def project(target: np.ndarray, tickers, c: Constraints) -> np.ndarray:
+    """Closest portfolio to ``target`` (least squares) that satisfies every limit."""
+    if _satisfies(target, tickers, c):
+        return target
+    return _solve(lambda w: float(np.sum((w - target) ** 2)) * 1e3, tickers, c,
+                  [np.clip(target, c.min_weight, c.max_weight) / np.clip(target, c.min_weight, c.max_weight).sum()]
+                  + _starts(tickers, c, 2))
+
+
+def _satisfies(w: np.ndarray, tickers, c: Constraints, tol: float = 1e-8) -> bool:
+    return all((con["fun"](w) >= -tol) if con["type"] == "ineq" else abs(con["fun"](w)) <= tol
+               for con in _slsqp_constraints(tickers, c)) and bool(
+        np.all(w >= c.min_weight - tol) and np.all(w <= c.max_weight + tol))
+
+
 def optimize(
     mu: pd.Series,
     cov_annual: pd.DataFrame,
@@ -292,6 +366,8 @@ def optimize(
         w = _min_cvar(returns, tickers, c)
     elif exact is not None:
         w = exact
+    elif strategy == "hrp":
+        w = project(hrp_weights(sigma), tickers, c)
     else:
         if strategy == "max_sharpe":
             def obj(w):
