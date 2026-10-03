@@ -81,7 +81,16 @@ among its reasons. Weights that your limits pin down are reported as such.
 ```bash
 python -m portfolio_optimizer --strategy min_cvar --max-weight 0.4 --class-cap 0.5 --max-turnover 0.3
 python -m portfolio_optimizer --no-robust --no-trade-band 0.03 --demo
+python -m portfolio_optimizer --source github
 ```
+
+### Price data
+
+Yahoo Finance first. If it's unreachable (offline, rate-limited, blocked network), NSE tickers fall back
+to real daily prices from NSE's own reports via the community
+[eod2_data](https://github.com/BennyThadikaran/eod2_data) repository on GitHub. These are adjusted for
+splits and bonuses but not dividends, and updated weekly. Synthetic demo data is the last resort and is
+clearly labelled.
 
 ## What changed from the original notebook
 
@@ -105,7 +114,7 @@ The original is kept at `notebooks/Portfolio_Optimiser_original.ipynb`.
 ```
 app.py                         Streamlit dashboard
 portfolio_optimizer/
-  data.py                      Yahoo Finance download + offline demo data
+  data.py                      Yahoo Finance, NSE-via-GitHub fallback, offline demo data
   analytics.py                 Estimators, risk metrics, attribution
   optimizer.py                 Strategies, limits, CVaR LP, resampling, frontier
   indicators.py                RSI, MACD, Bollinger, signal score

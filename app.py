@@ -10,7 +10,7 @@ import streamlit as st
 from portfolio_optimizer import analytics as an, charts, ui
 from portfolio_optimizer.config import (DEFAULT_BENCHMARK, DEFAULT_PORTFOLIO, DEFAULT_RISK_FREE_RATE,
                                         STRATEGIES, asset_class_for, label_for)
-from portfolio_optimizer.data import DataError, clean_prices, demo_prices, fetch_prices
+from portfolio_optimizer.data import DataError, clean_prices, demo_prices, fetch_prices, fetch_prices_nse_github
 from portfolio_optimizer.formatting import fmt_compact, fmt_pct
 from portfolio_optimizer.report import PortfolioReport, Settings, analyze
 
@@ -20,6 +20,7 @@ st.html(ui.CSS)
 
 PLOTLY_CONFIG = {"displaylogo": False, "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"]}
 LIVE, DEMO = "Live (Yahoo Finance)", "Demo (offline)"
+GITHUB = "NSE data via GitHub"
 
 
 # --------------------------------------------------------------------------
@@ -36,17 +37,22 @@ def load_prices(tickers: tuple[str, ...], benchmark: str, start: str, source: st
             data = fetch_prices(wanted, start)
             return data[list(tickers)], (data[benchmark] if benchmark else None), LIVE, None
         except DataError as e:
-            if set(e.missing) == set(wanted):
-                warning = ("Couldn't download any prices from Yahoo Finance (offline or rate-limited?). "
-                           "Showing synthetic demo data instead. Numbers below are illustrative only.")
-            elif e.missing == [benchmark]:
+            if e.missing == [benchmark]:
                 data = fetch_prices(list(tickers), start)
                 return data, None, LIVE, f"Benchmark {benchmark} unavailable; comparisons skip it."
-            else:
+            if set(e.missing) != set(wanted):
                 raise
-        except Exception as e:  # network errors, rate limits
-            warning = (f"Live prices unavailable ({type(e).__name__}). Showing synthetic demo data instead. "
-                       "Numbers below are illustrative only.")
+        except Exception:  # network errors, rate limits
+            pass
+        # Yahoo is unreachable: real NSE prices from GitHub, if every holding is on NSE.
+        try:
+            data = fetch_prices_nse_github(wanted, start)
+            return (data[list(tickers)], (data[benchmark] if benchmark else None), GITHUB,
+                    f"Yahoo Finance was unreachable, so prices come from NSE's daily reports via GitHub "
+                    f"(eod2_data, updated weekly; last close {data.index[-1]:%d %b %Y}).")
+        except Exception:
+            warning = ("Couldn't download prices from Yahoo Finance or GitHub (offline or rate-limited?). "
+                       "Showing synthetic demo data instead. Numbers below are illustrative only.")
     data = clean_prices(demo_prices(wanted, start=start))
     return data[list(tickers)], (data[benchmark] if benchmark else None), DEMO, warning
 
@@ -219,7 +225,8 @@ if settings.max_turnover:
     pills.append((f"Turnover ≤ {max_to}%", ""))
 if robust:
     pills.append((f"Robust · {len(r.resample.samples)} resamples", ""))
-pills.append(("Demo data — not real prices", "warn") if used_source == DEMO else ("Live prices", ""))
+pills.append(("Demo data — not real prices", "warn") if used_source == DEMO else
+             ("NSE prices via GitHub", "") if used_source == GITHUB else ("Live prices", ""))
 n_trades = sum(x.action != "Hold" for x in recs)
 st.html(ui.hero(
     "Your rebalancing plan",

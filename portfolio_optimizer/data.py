@@ -46,6 +46,42 @@ def fetch_prices(tickers: list[str], start: str, end: str | None = None) -> pd.D
     return clean_prices(close[tickers])
 
 
+EOD2_URL = "https://raw.githubusercontent.com/BennyThadikaran/eod2_data/main/daily/{}.csv"
+_EOD2_INDEX_FILES = {"^NSEI": "nifty 50", "^NSEBANK": "nifty bank"}
+
+
+def fetch_prices_nse_github(tickers: list[str], start: str, end: str | None = None,
+                            timeout: float = 20) -> pd.DataFrame:
+    """NSE daily closes from the community eod2_data repository on GitHub.
+
+    A fallback for when Yahoo Finance is blocked or rate-limited. The data
+    comes from NSE's own daily reports and is adjusted for splits and
+    bonuses (not dividends). It is updated weekly, so the last few days may
+    be missing. Only NSE tickers (``.NS``) and the Nifty 50 / Bank indices work.
+    """
+    from io import StringIO
+    from urllib.parse import quote
+    from urllib.request import urlopen
+
+    closes, missing = {}, []
+    for t in dict.fromkeys(tickers):
+        name = _EOD2_INDEX_FILES.get(t) or (t[:-3].lower() if t.endswith(".NS") else None)
+        if name is None:
+            missing.append(t)
+            continue
+        try:
+            with urlopen(EOD2_URL.format(quote(name)), timeout=timeout) as resp:
+                df = pd.read_csv(StringIO(resp.read().decode()), parse_dates=["Date"])
+            closes[t] = df.set_index("Date")["Close"].sort_index()
+        except Exception:  # 404 for unknown symbols, network errors
+            missing.append(t)
+    if missing:
+        raise DataError(f"No NSE data on GitHub for: {', '.join(missing)}", missing)
+    prices = pd.DataFrame(closes)
+    prices = prices.loc[pd.Timestamp(start):(pd.Timestamp(end) if end else None)]
+    return clean_prices(prices[list(dict.fromkeys(tickers))])
+
+
 def clean_prices(prices: pd.DataFrame) -> pd.DataFrame:
     """Align calendars: forward-fill short gaps (holidays), then drop the
     leading rows before every asset has started trading."""

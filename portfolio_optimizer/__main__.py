@@ -1,11 +1,11 @@
-"""Command-line report: ``python -m portfolio_optimizer [--demo]``."""
+"""Command-line report: ``python -m portfolio_optimizer [--source yahoo|github|demo]``."""
 
 from __future__ import annotations
 
 import argparse
 
 from .config import DEFAULT_BENCHMARK, DEFAULT_PORTFOLIO, DEFAULT_START, STRATEGIES
-from .data import demo_prices, fetch_prices
+from .data import demo_prices, fetch_prices, fetch_prices_nse_github
 from .report import Settings, analyze
 from .textreport import render_text
 
@@ -20,11 +20,14 @@ def main() -> None:
     p.add_argument("--max-turnover", type=float, default=None, help="max one-way turnover, e.g. 0.3")
     p.add_argument("--no-trade-band", type=float, default=None, help="skip weight changes below this, e.g. 0.02")
     p.add_argument("--no-robust", action="store_true", help="single-estimate weights (no resampling)")
-    p.add_argument("--demo", action="store_true", help="use synthetic prices (no internet needed)")
+    p.add_argument("--source", choices=["yahoo", "github", "demo"], default="yahoo",
+                   help="price source: Yahoo Finance, NSE data on GitHub (eod2_data), or synthetic")
+    p.add_argument("--demo", action="store_true", help="same as --source demo")
     args = p.parse_args()
 
     tickers = list(DEFAULT_PORTFOLIO)
-    load = demo_prices if args.demo else fetch_prices
+    source = "demo" if args.demo else args.source
+    load = {"yahoo": fetch_prices, "github": fetch_prices_nse_github, "demo": demo_prices}[source]
     data = load(tickers + [DEFAULT_BENCHMARK], start=args.start)
 
     s = Settings(strategy=args.strategy)
@@ -38,7 +41,7 @@ def main() -> None:
     s.robust = not args.no_robust
 
     report = analyze(DEFAULT_PORTFOLIO, data[tickers], s, data[DEFAULT_BENCHMARK])
-    print(render_text(report, demo=args.demo))
+    print(render_text(report, demo=source == "demo"))
 
 
 if __name__ == "__main__":
