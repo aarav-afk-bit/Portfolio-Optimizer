@@ -1,0 +1,97 @@
+# Portfolio Optimizer
+
+Optimises a stock/ETF portfolio and **explains every recommendation**: what to buy, trim or exit, how
+many units, and the reasons behind each move. Runs as an interactive dashboard, a command-line
+report, or a notebook.
+
+![Dashboard](docs/screenshot.png)
+
+## Quick start
+
+```bash
+pip install -r requirements.txt
+streamlit run app.py            # dashboard at http://localhost:8501
+python -m portfolio_optimizer   # text report in the terminal
+python -m portfolio_optimizer --demo   # same, with synthetic prices (no internet)
+```
+
+Edit your holdings in the sidebar. Tickers use Yahoo Finance symbols (`.NS` for NSE, `.BO` for BSE).
+Add a ticker with quantity 0 to see whether it's worth buying.
+
+## What you get
+
+| Tab | What it shows |
+|---|---|
+| **Verdict** | One-line recommendation plus the portfolio-level case for rebalancing |
+| **Action plan** | Trade list in units and rupees (CSV download), each holding's exact share of the improvement, and a card per holding with its reasons |
+| **Allocation** | Current vs target weights, asset-class mix, concentration metrics |
+| **Risk** | Share of capital vs share of risk, correlation heatmap, drawdowns, VaR/CVaR/Sortino/beta |
+| **Efficient frontier** | Random portfolios, the frontier under your position limits, the capital market line, current → target |
+| **Technicals** | Price with 50/200-day averages and Bollinger bands, RSI, MACD, and a −100…+100 score |
+| **Backtest** | Walk-forward test with no hindsight vs your current mix, equal weight and Nifty 50 |
+
+### The reasons
+
+Every holding gets reasons in four groups:
+
+- **Optimiser.** Why the weight moves. This comes from an exact attribution: the objective's gradient is
+  integrated along the path from your current to your target weights, so each holding's contribution
+  adds up to the total change (e.g. *"Adding it raises the Sharpe ratio by 0.163 of the 0.644 total
+  improvement"*). The explanation can't contradict the action.
+- **Risk & diversification.** Risk share vs capital share, correlation with the rest of the portfolio,
+  worst drawdown, position-cap effects.
+- **Timing.** RSI, MACD, trend, Bollinger bands and momentum. These suggest *when* to trade (now,
+  stagger, wait for a dip), never *how much*.
+- **Your position.** Unrealised P&L against your average cost, plus capital-gains and loss-offset notes.
+
+## Strategies
+
+- **Max Sharpe ratio**: best expected return per unit of risk, above the risk-free rate.
+- **Minimum volatility**: the smoothest ride.
+- **Risk parity**: each holding contributes the same share of portfolio risk.
+- **Max diversification**: holdings whose swings offset each other.
+
+All are long-only and fully invested, with min/max position limits. A *rebalance intensity* slider lets
+you move part of the way toward the target.
+
+## What changed from the original notebook
+
+The original is kept at `notebooks/Portfolio_Optimiser_original.ipynb`.
+
+| Original | Now |
+|---|---|
+| Sharpe ratio with a 0% risk-free rate | Measured against a 6.5% risk-free rate (adjustable), so assets must beat T-bills |
+| Raw historical mean returns: the optimiser chases whatever rallied most | Bayes–Stein shrinkage of expected returns |
+| Sample covariance | Ledoit–Wolf shrinkage of correlations |
+| No position limits (could put 45% in one ETF) | Min/max weights with a feasibility check |
+| RSI with a simple moving average | Wilder's RSI (the standard definition), MACD with `adjust=False` |
+| Bollinger bands computed but never used | Used in the signal score |
+| Optimal weights only | Units to buy/sell, rupee amounts, timing, CSV export |
+| No explanation | Reasons for every holding plus a portfolio-level verdict |
+| In-sample results only | Walk-forward backtest with trading costs |
+| `pct_change` FutureWarning, NaN prices on holidays | Calendars aligned, explicit `fill_method=None` |
+
+## Project layout
+
+```
+app.py                         Streamlit dashboard
+portfolio_optimizer/
+  data.py                      Yahoo Finance download + offline demo data
+  analytics.py                 Estimators, risk metrics, attribution
+  optimizer.py                 Strategies, efficient frontier
+  indicators.py                RSI, MACD, Bollinger, signal score
+  reasons.py                   Actions and plain-English reasons
+  backtest.py                  Walk-forward backtest
+  report.py                    analyze(): runs everything
+  charts.py                    Plotly figures (app + notebook)
+  ui.py                        Dashboard styling and HTML components
+notebooks/                     Updated notebook + the original
+tests/                         pytest suite
+```
+
+Run the tests with `pip install -r requirements-dev.txt && pytest`.
+
+## Caveats
+
+Expected returns are estimated from past prices and are the least reliable input, even after
+shrinkage. Taxes, exit loads and lot sizes are not modelled. **Educational tool, not investment advice.**
