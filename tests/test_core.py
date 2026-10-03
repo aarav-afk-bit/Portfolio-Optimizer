@@ -191,3 +191,10 @@ def test_indian_number_formatting():
     assert fmt_compact(2_310_000, "₹") == "₹23.10L"
     assert fmt_compact(12_500_000, "₹") == "₹1.25Cr"
     assert fmt_compact(1_500_000, "$") == "$1.50M"
+
+
+def test_nse_github_rejects_non_nse_tickers_without_network():
+    from portfolio_optimizer.data import fetch_prices_nse_github
+    with pytest.raises(DataError) as e:
+        fetch_prices_nse_github(["AAPL", "MSFT"], "2024-01-01")
+    assert e.value.missing == ["AAPL", "MSFT"]
