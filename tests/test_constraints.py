@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -117,3 +118,29 @@ def test_holding_class_override(data):
     r = analyze(holdings, p, Settings(robust=False, run_backtest=False))
     assert r.asset_classes["MAFANG.NS"] == "Indian equity"
     assert next(x for x in r.recommendations if x.ticker == "MAFANG.NS").asset_class == "Indian equity"
+
+
+def test_attribution_credits_cutting_a_dominant_risky_position(data):
+    """Regression (found on real NSE data): trimming a 70% high-volatility
+    position that the optimiser cuts must be credited as raising the Sharpe."""
+    _, rets, mu, cov = data
+    hal = TICKERS.index("HAL.NS")
+    f, _ = an.strategy_objective("max_sharpe", mu, cov, 0.065)
+    w0 = CURRENT.to_numpy()
+    w1 = optimize(mu, cov, "max_sharpe", 0.065, constraints=Constraints(max_weight=0.4)).weights.to_numpy()
+    parts = an.attribute_change(f, w0, w1)
+    assert w1[hal] < w0[hal] and parts[hal] > 0
+
+
+def test_attribution_uses_budget_neutral_gradient(data):
+    """For a tiny move the contribution equals d_i * (mu_i - rf - S * m_i) / vol."""
+    _, _, mu, cov = data
+    rf = 0.065
+    f, _ = an.strategy_objective("max_sharpe", mu, cov, rf)
+    w0 = CURRENT.to_numpy()
+    d = np.array([1, -1, 0, 0, 0]) * 1e-4
+    sigma = cov.to_numpy()
+    vol = np.sqrt(w0 @ sigma @ w0)
+    sharpe = (w0 @ mu.to_numpy() - rf) / vol
+    g = (mu.to_numpy() - rf - sharpe * sigma @ w0 / vol) / vol
+    np.testing.assert_allclose(an.attribute_change(f, w0, w0 + d)[:2], (d * g)[:2], rtol=1e-3)
