@@ -10,6 +10,7 @@ import pytest
 from portfolio_optimizer import analytics as an
 from portfolio_optimizer.config import DEFAULT_PORTFOLIO, TRADING_DAYS, asset_class_for
 from portfolio_optimizer.data import demo_prices
+from portfolio_optimizer.estimators import View, black_litterman
 from portfolio_optimizer.optimizer import Constraints, hrp_weights, optimize
 
 TICKERS = list(DEFAULT_PORTFOLIO)
@@ -89,3 +90,22 @@ def test_hrp_matches_pyportfolioopt(data):
     ref = hrp_mod.HRPOpt(cov_matrix=cov).optimize(linkage_method="single")
     ours = hrp_weights(cov.to_numpy(), "single")
     np.testing.assert_allclose(ours, pd.Series(ref)[TICKERS].to_numpy(), atol=1e-8)
+
+
+def test_black_litterman_matches_pyportfolioopt(data):
+    bl_mod = pytest.importorskip("pypfopt.black_litterman")
+    rets, _, _ = data
+    cov_d = an.ledoit_wolf_covariance(rets)
+    sigma = cov_d * TRADING_DAYS
+    rf, tau = 0.065, 0.05
+    views = (View("HAL.NS", 0.15, 0.6), View("GOLDETF.NS", 0.09, 0.3))
+    ours = black_litterman(rets, cov_d, rf, views, tau=tau, use_sample=False)
+
+    pi = ours.attrs["prior"] - rf
+    p_mat = np.zeros((2, len(TICKERS)))
+    p_mat[0, TICKERS.index("HAL.NS")] = p_mat[1, TICKERS.index("GOLDETF.NS")] = 1
+    q = np.array([0.15 - rf, 0.09 - rf])
+    omega = np.diag([(1 - v.confidence) / v.confidence * tau * float(p @ sigma.to_numpy() @ p)
+                     for v, p in zip(views, p_mat)])
+    ref = bl_mod.BlackLittermanModel(sigma, pi=pi, P=p_mat, Q=q, omega=omega, tau=tau).bl_returns()
+    np.testing.assert_allclose((ours - rf).to_numpy(), ref[TICKERS].to_numpy(), atol=1e-10)

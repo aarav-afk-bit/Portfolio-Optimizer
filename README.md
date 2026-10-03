@@ -72,6 +72,16 @@ toward the target.
   more trading than that, you get the exact minimum instead of a vague failure.
 - **No-trade band**: skip trades that move a weight by less than this (default 2 pp).
 
+### Return and risk models
+
+- **Black–Litterman (default)**: starts from the return each holding's risk deserves at a long-run
+  Sharpe ratio (0.4 by default), then lets your price history move it in proportion to how precisely
+  the data measures it: about 15% weight for 3–4 years of prices. This stops a single hot streak
+  (e.g. gold and silver in 2023–2026) from dictating the plan. Add your own views, e.g.
+  "HAL 15% a year, 60% confident", and they are blended in.
+- **Bayes–Stein** shrinkage and raw **historical** averages are still available.
+- **Risk**: Ledoit–Wolf shrunk covariance (default) or **EWMA**, which weights recent volatility more.
+
 ### Robust weights
 
 Expected returns and correlations are noisy, so a single optimisation over-reacts to them. By default
@@ -84,7 +94,7 @@ among its reasons. Weights that your limits pin down are reported as such.
 ```bash
 python -m portfolio_optimizer --strategy min_cvar --max-weight 0.4 --class-cap 0.5 --max-turnover 0.3
 python -m portfolio_optimizer --no-robust --no-trade-band 0.03 --demo
-python -m portfolio_optimizer --source github
+python -m portfolio_optimizer --source github --view HAL.NS=0.15:0.6 --risk-model ewma
 ```
 
 ### Price data
@@ -118,8 +128,9 @@ The original is kept at `notebooks/Portfolio_Optimiser_original.ipynb`.
 app.py                         Streamlit dashboard
 portfolio_optimizer/
   data.py                      Yahoo Finance, NSE-via-GitHub fallback, offline demo data
-  analytics.py                 Estimators, risk metrics, attribution
-  optimizer.py                 Strategies, limits, CVaR LP, resampling, frontier
+  estimators.py                Black–Litterman, EWMA, Ledoit–Wolf, Bayes–Stein
+  analytics.py                 Risk metrics, attribution
+  optimizer.py                 Strategies (exact max Sharpe, HRP, CVaR LP, ...), limits, resampling
   indicators.py                RSI, MACD, Bollinger, signal score
   reasons.py                   Actions and plain-English reasons
   backtest.py                  Walk-forward backtest

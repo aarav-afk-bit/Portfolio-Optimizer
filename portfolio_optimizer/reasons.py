@@ -237,6 +237,18 @@ def build_recommendations(ctx: dict) -> list[AssetRecommendation]:
         else:
             reasons.append(Reason("neutral", "Return",
                                   f"Sharpe {sh:.2f}: expected {fmt_pct(mu)} a year with {fmt_pct(vol)} volatility."))
+        bl = ctx.get("bl")
+        if bl is not None:
+            prior, sample = float(bl["prior"][t]), float(bl["sample"][t])
+            view = next((v for v in bl["views"] if v.ticker == t), None)
+            text = (f"Where the {fmt_pct(mu)} comes from: its risk alone justifies {fmt_pct(prior)} at a long-run "
+                    f"Sharpe of {bl['prior_sharpe']:.2f}. Its {fmt_pct(sample)} a year in your price history pulls "
+                    f"that only {fmt_pct(bl['data_weight'], 0)} of the way up or down, because a few years of "
+                    f"returns say little about the next few.")
+            if view is not None:
+                text += (f" Your view of {fmt_pct(view.expected)} ({fmt_pct(view.confidence, 0)} confidence) is "
+                         f"blended in too.")
+            reasons.append(Reason("neutral", "Return", text))
 
         # Risk concentration in the current portfolio
         rc = float(ctx["risk_share"][t])

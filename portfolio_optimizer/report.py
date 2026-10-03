@@ -11,6 +11,7 @@ from . import analytics as an
 from .backtest import BacktestResult, walk_forward
 from .config import (DEFAULT_MAX_WEIGHT, DEFAULT_MIN_WEIGHT, DEFAULT_RISK_FREE_RATE, STRATEGIES, TRADING_DAYS,
                      asset_class_for)
+from .estimators import Estimator, View
 from .formatting import currency_symbol
 from .indicators import TechnicalSnapshot, technical_snapshot
 from .optimizer import (Constraints, OptimizationResult, ResampleResult, efficient_frontier, evaluate,
@@ -24,7 +25,11 @@ class Settings:
     risk_free_rate: float = DEFAULT_RISK_FREE_RATE
     min_weight: float = DEFAULT_MIN_WEIGHT
     max_weight: float = DEFAULT_MAX_WEIGHT
-    return_method: str = "bayes_stein"
+    return_method: str = "black_litterman"  # see estimators.RETURN_MODELS
+    risk_model: str = "ledoit_wolf"  # see estimators.RISK_MODELS
+    ewma_halflife: float = 126  # trading days, for the EWMA risk model
+    prior_sharpe: float = 0.4  # long-run Sharpe ratio behind the Black–Litterman prior
+    views: tuple[View, ...] = ()  # your own return views (Black–Litterman only)
     rebalance_intensity: float = 1.0  # 1 = go all the way to the optimal weights
     run_backtest: bool = True
     backtest_lookback: int = TRADING_DAYS
@@ -35,6 +40,10 @@ class Settings:
     no_trade_band: float = 0.02  # skip trades that move a weight by less than this
     robust: bool = True  # average weights over resampled histories (Michaud)
     n_resamples: int = 100
+
+    def estimator(self) -> Estimator:
+        return Estimator(return_model=self.return_method, risk_model=self.risk_model, rf=self.risk_free_rate,
+                         ewma_halflife=self.ewma_halflife, prior_sharpe=self.prior_sharpe, views=tuple(self.views))
 
 
 @dataclass
@@ -88,14 +97,20 @@ def analyze(
     notes: list[str] = []
 
     returns = an.daily_returns(prices)
-    cov_daily = an.ledoit_wolf_covariance(returns)
+    est = s.estimator()
+    mu, cov_daily = est.fit(returns)
     cov = cov_daily * TRADING_DAYS
-    mu = an.expected_returns(returns, cov_daily, s.return_method)
     vols = pd.Series(np.sqrt(np.diag(cov)), index=tickers)
     corr = cov / np.outer(vols, vols)
 
-    if "shrinkage" in cov_daily.attrs:
+    if cov_daily.attrs.get("shrinkage") is not None:
         notes.append(f"Correlations shrunk {cov_daily.attrs['shrinkage']:.0%} toward zero (Ledoit–Wolf).")
+    if "halflife" in cov_daily.attrs:
+        notes.append(f"Volatilities weight recent days more (EWMA, {cov_daily.attrs['halflife']:.0f}-day half-life).")
+    if "data_weight" in mu.attrs:
+        notes.append(f"Expected returns: Black–Litterman equilibrium (long-run Sharpe {s.prior_sharpe:.2f}) updated "
+                     f"by your price history, which gets {mu.attrs['data_weight']:.0%} weight"
+                     + (f", plus {len(mu.attrs['views'])} view(s) of your own." if mu.attrs["views"] else "."))
     if "shrinkage" in mu.attrs:
         notes.append(f"Expected returns shrunk {mu.attrs['shrinkage']:.0%} toward the common mean (Bayes–Stein).")
 
@@ -115,7 +130,7 @@ def analyze(
     point = optimize(mu, cov, s.strategy, rf, constraints=cons, returns=returns)
     rs = None
     if s.robust:
-        rs = resample(returns, s.strategy, rf, cons, s.n_resamples, s.return_method)
+        rs = resample(returns, s.strategy, rf, cons, s.n_resamples, estimator=est)
         optimal = evaluate(rs.mean, mu, cov, rf, s.strategy)
         notes.append(f"Target = average of {len(rs.samples)} optimisations on block-bootstrapped histories "
                      f"(Michaud resampling).")
@@ -175,6 +190,7 @@ def analyze(
         capped_classes=_capped_classes(optimal.weights, classes, s.class_cap),
         max_turnover=s.max_turnover, optimal_turnover=float((optimal.weights - w_cur).abs().sum() / 2),
         resample=rs,
+        bl=mu.attrs if "data_weight" in mu.attrs else None,
         hrp_split=_hrp_split(cov, tickers) if s.strategy == "hrp" else None,
         cvar_current=an.historical_cvar(w_cur.to_numpy(), returns),
         cvar_target=an.historical_cvar(target.weights.to_numpy(), returns),
@@ -188,9 +204,9 @@ def analyze(
         try:
             bt = walk_forward(prices, w_cur, s.strategy, rf, s.min_weight, s.max_weight,
                               s.backtest_lookback, s.backtest_rebalance_every, s.transaction_cost_bps,
-                              benchmark, s.return_method,
-                              constraints=Constraints(s.min_weight, s.max_weight, classes, s.class_cap,
-                                                      max_turnover=s.max_turnover))
+                              benchmark, constraints=Constraints(s.min_weight, s.max_weight, classes, s.class_cap,
+                                                                 max_turnover=s.max_turnover),
+                              estimator=est)
         except ValueError as e:
             notes.append(f"Backtest skipped: {e}")
 
