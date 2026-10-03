@@ -32,8 +32,12 @@ def render_text(r: PortfolioReport, demo: bool = False, width: int = 96) -> str:
     out.append("\nWHAT TO DO")
     for rec in sorted(r.recommendations, key=lambda x: -abs(x.trade_value)):
         out.append(f"\n  {rec.ticker} ({rec.label}) – {rec.action.upper()}: {rec.headline}")
+        conf = ""
+        if rec.weight_range:
+            lo, hi = (fmt_pct(x, 0) for x in rec.weight_range)
+            conf = f" · confidence {rec.confidence.lower()} ({lo if lo == hi else f'{lo}–{hi}'})"
         out.append(f"    timing: {rec.timing} · technicals {rec.technical.stance.lower()} "
-                   f"({rec.technical.score:+.0f})")
+                   f"({rec.technical.score:+.0f}){conf}")
         out.extend(wrap(f"{ICON[x.kind]} [{x.category}] {x.text}") for x in rec.reasons)
 
     if r.notes:

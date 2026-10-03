@@ -41,6 +41,7 @@ ASSET_CLASSES: dict[str, str] = {
 STRATEGIES: dict[str, str] = {
     "max_sharpe": "Max Sharpe ratio",
     "min_volatility": "Minimum volatility",
+    "min_cvar": "Minimum tail risk (CVaR)",
     "risk_parity": "Risk parity",
     "max_diversification": "Max diversification",
 }

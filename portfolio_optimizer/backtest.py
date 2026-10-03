@@ -8,14 +8,14 @@ have experienced.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
 
 from . import analytics as an
 from .config import TRADING_DAYS
-from .optimizer import optimize
+from .optimizer import Constraints, optimize
 
 
 @dataclass
@@ -32,7 +32,7 @@ def _run_schedule(returns: pd.DataFrame, start: int, step: int, weight_fn, cost_
     w = None
     for i in range(start, len(r)):
         if (i - start) % step == 0:
-            target = weight_fn(i)
+            target = weight_fn(i, w)
             turnover = np.abs(target - w).sum() if w is not None else 0.0
             w = target.copy()
             cost = turnover * cost_bps / 1e4
@@ -56,28 +56,36 @@ def walk_forward(
     cost_bps: float = 10.0,
     benchmark: pd.Series | None = None,
     mu_method: str = "bayes_stein",
+    constraints: Constraints | None = None,
 ) -> BacktestResult:
+    """``constraints`` (asset-class caps, turnover limit) apply at every rebalance;
+    the turnover limit is measured from the weights held just before it. The
+    first rebalance starts from ``current_weights``."""
     returns = an.daily_returns(prices)
     if len(returns) <= lookback + 20:
         raise ValueError("Not enough history for a walk-forward test; use an earlier start date.")
     n = returns.shape[1]
     history: dict[pd.Timestamp, pd.Series] = {}
 
-    def optimised(i: int) -> np.ndarray:
+    cur = current_weights.reindex(returns.columns).fillna(0).to_numpy()
+    base = constraints or Constraints(min_weight=min_weight, max_weight=max_weight)
+
+    def optimised(i: int, held: np.ndarray | None) -> np.ndarray:
         window = returns.iloc[i - lookback:i]
         cov = an.ledoit_wolf_covariance(window)
         mu = an.expected_returns(window, cov, mu_method)
-        res = optimize(mu, cov * TRADING_DAYS, strategy, rf, min_weight, max_weight)
+        start_w = cur if held is None else held
+        c = replace(base, current=pd.Series(start_w, index=returns.columns))
+        res = optimize(mu, cov * TRADING_DAYS, strategy, rf, constraints=c, returns=window, n_starts=4)
         history[returns.index[i]] = res.weights
         return res.weights.to_numpy()
 
-    cur = current_weights.reindex(returns.columns).fillna(0).to_numpy()
     eq = np.full(n, 1 / n)
 
     daily = pd.DataFrame({
         "Optimised (walk-forward)": _run_schedule(returns, lookback, rebalance_every, optimised, cost_bps),
-        "Your current mix": _run_schedule(returns, lookback, rebalance_every, lambda i: cur, cost_bps),
-        "Equal weight": _run_schedule(returns, lookback, rebalance_every, lambda i: eq, cost_bps),
+        "Your current mix": _run_schedule(returns, lookback, rebalance_every, lambda i, w: cur, cost_bps),
+        "Equal weight": _run_schedule(returns, lookback, rebalance_every, lambda i, w: eq, cost_bps),
     })
     bench_daily = None
     if benchmark is not None:

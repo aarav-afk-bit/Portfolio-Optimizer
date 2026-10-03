@@ -35,7 +35,8 @@ def ledoit_wolf_covariance(returns: pd.DataFrame) -> pd.DataFrame:
     m = np.trace(s) / n
     target = m * np.eye(n)
     d2 = np.sum((s - target) ** 2) / n
-    b2_bar = sum(np.sum((np.outer(row, row) - s) ** 2) for row in z) / n / t**2
+    # sum_t ||z_t z_t' - S||^2 simplifies to sum_t ||z_t||^4 - t * ||S||^2 (no per-row loop).
+    b2_bar = (np.sum(np.sum(z**2, axis=1) ** 2) - t * np.sum(s**2)) / n / t**2
     b2 = min(b2_bar, d2)
     shrink = b2 / d2 if d2 > 0 else 1.0
     corr = shrink * target + (1 - shrink) * s
@@ -104,6 +105,13 @@ def risk_contributions(w: np.ndarray, cov_annual: pd.DataFrame) -> pd.Series:
     return pd.Series(rc, index=cov_annual.index)
 
 
+def historical_cvar(w: np.ndarray, returns: pd.DataFrame | np.ndarray, level: float = 0.95) -> float:
+    """Average daily loss on the worst (1 - level) share of days (positive = loss)."""
+    r = np.asarray(returns) @ w
+    k = max(int(np.ceil(len(r) * (1 - level))), 1)
+    return float(-np.sort(r)[:k].mean())
+
+
 def diversification_ratio(w: np.ndarray, cov_annual: pd.DataFrame) -> float:
     vols = np.sqrt(np.diag(cov_annual.to_numpy()))
     pvol = portfolio_volatility(w, cov_annual)
@@ -168,10 +176,11 @@ def series_stats(
 # Explaining a rebalance
 # --------------------------------------------------------------------------
 
-def strategy_objective(strategy: str, mu: pd.Series, cov_annual: pd.DataFrame, rf: float):
+def strategy_objective(strategy: str, mu: pd.Series, cov_annual: pd.DataFrame, rf: float,
+                       returns: pd.DataFrame | None = None):
     """The quantity each strategy improves, as a function of weights.
 
-    Returns ``(f, higher_is_better)``.
+    Returns ``(f, higher_is_better)``. ``returns`` (daily) is needed for min_cvar.
     """
     sigma = cov_annual.to_numpy()
     mu_v = mu.to_numpy()
@@ -186,6 +195,11 @@ def strategy_objective(strategy: str, mu: pd.Series, cov_annual: pd.DataFrame, r
         return vol, False
     if strategy == "max_diversification":
         return (lambda w: (w @ vols) / vol(w)), True
+    if strategy == "min_cvar":
+        if returns is None:
+            raise ValueError("min_cvar needs daily returns")
+        r = returns.to_numpy()
+        return (lambda w: historical_cvar(w, r)), False
     if strategy == "risk_parity":
         def concentration(w):
             rc = w * (sigma @ w)

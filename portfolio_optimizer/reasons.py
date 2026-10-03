@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .config import STRATEGIES, asset_class_for, label_for
+from .config import STRATEGIES, label_for
 from .formatting import fmt_compact, fmt_money, fmt_pct
 from .indicators import TechnicalSnapshot
 
@@ -52,6 +52,8 @@ class AssetRecommendation:
     headline: str
     contribution: float  # this asset's share of the objective's improvement
     reasons: list[Reason] = field(default_factory=list)
+    confidence: str | None = None  # High | Medium | Low (resampling on) or None
+    weight_range: tuple[float, float] | None = None  # 10th–90th percentile of resampled weights
 
     @property
     def delta_weight(self) -> float:
@@ -71,22 +73,26 @@ def decide_action(cur: float, tgt: float, band: float = HOLD_BAND) -> str:
 _OBJECTIVE_NAMES = {
     "max_sharpe": "Sharpe ratio",
     "min_volatility": "volatility",
+    "min_cvar": "tail risk (daily CVaR)",
     "max_diversification": "diversification ratio",
 }
+_LOWER_IS_BETTER = {"min_volatility", "min_cvar"}
 
 
 def _fmt_obj(strategy: str, x: float) -> str:
-    return f"{abs(x) * 100:.2f} pp" if strategy == "min_volatility" else f"{abs(x):.3f}"
+    return f"{abs(x) * 100:.2f} pp" if strategy in _LOWER_IS_BETTER else f"{abs(x):.3f}"
 
 
 _WHY_ADD = {
     "max_sharpe": "it earns more return per unit of risk it adds than the rest of the portfolio",
     "min_volatility": "it adds less risk at the margin than the holdings it replaces",
+    "min_cvar": "it holds up better than the holdings it replaces on the worst days",
     "max_diversification": "its swings largely offset those of your other holdings",
 }
 _WHY_CUT = {
     "max_sharpe": "the money earns more per unit of risk elsewhere",
     "min_volatility": "it adds more risk at the margin than the holdings that replace it",
+    "min_cvar": "it contributes heavily to losses on the worst days",
     "max_diversification": "it moves too much in step with your other holdings",
 }
 
@@ -113,13 +119,13 @@ def _driver_reason(strategy: str, t: str, action: str, ctx: dict) -> Reason:
     obj = _OBJECTIVE_NAMES[strategy]
     if action == "Hold":
         return Reason("neutral", "Optimiser",
-                      f"Already within {HOLD_BAND:.0%} of its optimal weight, so trading it would barely move "
+                      f"Already within {ctx['band'] * 100:.0f} pp of its optimal weight, so trading it would barely move "
                       f"the {obj}.")
 
     c, total = float(ctx["contrib"][t]), float(ctx["objective_change"])
     helps = c > 0 if ctx["higher_better"] else c < 0
     verb = "raises" if c > 0 else "lowers"
-    gain = "improvement" if strategy != "min_volatility" else "reduction"
+    gain = "reduction" if strategy in _LOWER_IS_BETTER else "improvement"
     move = "Adding" if d > 0 else "Reducing"
     if helps:
         why = (_WHY_ADD if d > 0 else _WHY_CUT)[strategy]
@@ -190,10 +196,11 @@ def build_recommendations(ctx: dict) -> list[AssetRecommendation]:
         cur_val = h["qty"] * price
         tgt_val = tgt_w * ctx["total_value"]
         trade_val = tgt_val - cur_val
-        action = decide_action(cur_w, tgt_w)
+        action = decide_action(cur_w, tgt_w, ctx["band"])
         trade_qty = int(np.sign(trade_val) * np.floor(abs(trade_val) / price)) if action != "Hold" else 0
         if action == "Exit":
             trade_qty = -int(h["qty"])
+        trade_val = trade_qty * price  # what the whole-unit order actually costs or raises
         invested = h["qty"] * h["avg_price"]
         pnl = cur_val - invested
         pnl_pct = pnl / invested if invested > 0 else float("nan")
@@ -251,14 +258,51 @@ def build_recommendations(ctx: dict) -> list[AssetRecommendation]:
                                   f"Fell {fmt_pct(-mdd, 0)} peak-to-trough in this period. Expect deep swings."))
 
         # Constraint effects
-        if tgt_w >= ctx["max_weight"] - 1e-4 and ctx["max_weight"] < 1:
+        cls = ctx["asset_classes"][t]
+        opt_w = float(ctx["optimal_w"][t])
+        if opt_w >= ctx["max_weight"] - 0.005 and ctx["max_weight"] < 1:
             reasons.append(Reason("neutral", "Optimiser",
                                   f"Held at your {fmt_pct(ctx['max_weight'], 0)} position cap. Without the cap "
                                   f"the optimiser would hold more."))
-        elif ctx["optimal_w"][t] < 0.005:
+        elif cls in ctx["capped_classes"] and opt_w > 0.005:
+            reasons.append(Reason("neutral", "Optimiser",
+                                  f"Its asset class ({cls}) is at your {fmt_pct(ctx['class_cap'], 0)} cap, which "
+                                  f"limits how much it can hold."))
+        elif opt_w < 0.005:
             reasons.append(Reason("negative", "Optimiser",
                                   "The optimiser gives it zero weight: on these estimates it does not improve "
                                   "the portfolio at any size."))
+
+        # Robustness: how stable is this weight across resampled histories?
+        confidence, w_range = None, None
+        rs = ctx.get("resample")
+        if rs is not None:
+            lo, hi, held = float(rs.low[t]), float(rs.high[t]), float(rs.held[t])
+            w_range = (lo, hi)
+            spread = hi - lo
+            n_s = len(rs.samples)
+            span = f"{fmt_pct(lo, 0)}–{fmt_pct(hi, 0)}"
+            if spread < 0.005:
+                confidence = "High"
+                reasons.append(Reason("neutral", "Confidence",
+                                      f"Every one of {n_s} resampled optimisations lands on {fmt_pct(lo, 0)}: "
+                                      f"your limits set this weight, not the noisy estimates."))
+            elif spread <= 0.10:
+                confidence = "High"
+                reasons.append(Reason("positive", "Confidence",
+                                      f"High confidence: across {n_s} resampled price histories the optimal weight "
+                                      f"stayed within {span}."))
+            elif spread <= 0.25:
+                confidence = "Medium"
+                reasons.append(Reason("neutral", "Confidence",
+                                      f"Medium confidence: the optimal weight ranged {span} across {n_s} resampled "
+                                      f"histories. The target uses their average."))
+            else:
+                confidence = "Low"
+                reasons.append(Reason("neutral", "Confidence",
+                                      f"Low confidence: the optimal weight swung between {span} across {n_s} "
+                                      f"resampled histories (held in {fmt_pct(held, 0)} of them), so the data does "
+                                      f"not pin it down. Consider moving gradually."))
 
         # Technicals and timing
         reasons.extend(_technical_reasons(snap))
@@ -281,16 +325,23 @@ def build_recommendations(ctx: dict) -> list[AssetRecommendation]:
                                       "Selling books a capital loss, which can offset gains elsewhere."))
 
         recs.append(AssetRecommendation(
-            ticker=t, label=label_for(t), asset_class=asset_class_for(t), action=action, price=price,
+            ticker=t, label=label_for(t), asset_class=cls, action=action, price=price,
             qty=h["qty"], avg_price=h["avg_price"], current_value=cur_val, target_value=tgt_val,
-            trade_value=trade_val if action != "Hold" else 0.0, trade_qty=trade_qty,
+            trade_value=trade_val, trade_qty=trade_qty,
             current_weight=cur_w, target_weight=tgt_w, pnl=pnl, pnl_pct=pnl_pct,
             expected_return=mu, volatility=vol, sharpe=sh, risk_share=rc, technical=snap,
             timing=timing, headline=_headline(action, cur_w, tgt_w, trade_qty, trade_val, sym),
-            contribution=float(ctx["contrib"][t]),
+            contribution=float(ctx["contrib"][t]), confidence=confidence, weight_range=w_range,
             reasons=reasons,
         ))
     return recs
+
+
+def cash_flow(recs: list[AssetRecommendation]) -> dict[str, float]:
+    """Money raised by sells and spent on buys, at whole units and the latest price."""
+    buys = sum(r.trade_qty * r.price for r in recs if r.trade_qty > 0)
+    sells = sum(-r.trade_qty * r.price for r in recs if r.trade_qty < 0)
+    return {"buys": buys, "sells": sells, "net": buys - sells}
 
 
 def _headline(action, cur, tgt, qty, val, sym) -> str:
@@ -333,10 +384,41 @@ def portfolio_reasons(ctx: dict, current, target, recs: list[AssetRecommendation
     mix = ", ".join(f"{k} {fmt_pct(a, 0)} → {fmt_pct(b, 0)}" for k, (a, b) in classes.items())
     out.append(Reason("neutral", "Diversification", f"Asset-class mix: {mix}."))
 
+    cv_cur, cv_tgt = ctx["cvar_current"], ctx["cvar_target"]
+    out.append(Reason("positive" if cv_tgt < cv_cur - 0.0005 else "negative" if cv_tgt > cv_cur + 0.0005 else "neutral",
+                      "Risk", f"Average loss on the worst 5% of days {fmt_pct(cv_cur, 2)} → {fmt_pct(cv_tgt, 2)} "
+                              f"(historical CVaR)."))
+
     turnover = sum(abs(r.trade_value) for r in recs) / 2
     out.append(Reason("neutral", "Position",
                       f"Rebalancing means moving about {fmt_compact(turnover, sym)} "
                       f"({fmt_pct(turnover / ctx['total_value'], 0)} of the portfolio)."))
+    cash = cash_flow(recs)
+    if cash["buys"] or cash["sells"]:
+        if cash["net"] > 0:
+            tail = f"you need to add about {fmt_compact(cash['net'], sym)} of fresh money"
+        elif cash["net"] < 0:
+            tail = f"about {fmt_compact(-cash['net'], sym)} is left over as cash"
+        else:
+            tail = "the trades fund each other exactly"
+        out.append(Reason("neutral", "Position",
+                          f"Sales raise {fmt_compact(cash['sells'], sym)} and purchases cost "
+                          f"{fmt_compact(cash['buys'], sym)}, so {tail} (whole units, no-trade band applied)."))
+
+    max_to = ctx.get("max_turnover")
+    if max_to is not None and max_to < 1 and ctx["optimal_turnover"] >= max_to - 0.005:
+        out.append(Reason("neutral", "Optimiser",
+                          f"Your {fmt_pct(max_to, 0)} turnover limit is binding: without it the optimiser would "
+                          f"trade more to reach a better mix."))
+
+    rs = ctx.get("resample")
+    if rs is not None:
+        low = [r.label for r in recs if r.confidence == "Low"]
+        out.append(Reason("neutral" if low else "positive", "Confidence",
+                          f"Target weights average {len(rs.samples)} optimisations on resampled price histories, "
+                          f"which damps estimation noise."
+                          + (f" Low-confidence weights: {', '.join(low)}." if low else
+                             " Every weight is reasonably stable.")))
 
     if backtest is not None:
         s = backtest.stats

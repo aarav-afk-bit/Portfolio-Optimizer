@@ -48,11 +48,36 @@ Every holding gets reasons in four groups:
 
 - **Max Sharpe ratio**: best expected return per unit of risk, above the risk-free rate.
 - **Minimum volatility**: the smoothest ride.
+- **Minimum tail risk (CVaR)**: smallest average loss on the worst 5% of days, solved exactly as a
+  linear program (Rockafellar–Uryasev) on historical returns.
 - **Risk parity**: each holding contributes the same share of portfolio risk.
 - **Max diversification**: holdings whose swings offset each other.
 
-All are long-only and fully invested, with min/max position limits. A *rebalance intensity* slider lets
-you move part of the way toward the target.
+All are long-only and fully invested. A *rebalance intensity* slider lets you move part of the way
+toward the target.
+
+### Limits
+
+- **Position size**: min/max weight per holding.
+- **Asset class**: max total weight per class (e.g. precious metals ≤ 50%). Classes come from the
+  holdings' `class` field, with sensible defaults for known tickers.
+- **Turnover**: max share of the portfolio traded in one rebalance. If your other limits alone need
+  more trading than that, you get the exact minimum instead of a vague failure.
+- **No-trade band**: skip trades that move a weight by less than this (default 2 pp).
+
+### Robust weights
+
+Expected returns and correlations are noisy, so a single optimisation over-reacts to them. By default
+the target is the average of 100 optimisations on **block-bootstrapped** price histories (Michaud
+resampling). Each holding also gets a 10th–90th percentile range and a **confidence** level, shown
+among its reasons. Weights that your limits pin down are reported as such.
+
+### Command line
+
+```bash
+python -m portfolio_optimizer --strategy min_cvar --max-weight 0.4 --class-cap 0.5 --max-turnover 0.3
+python -m portfolio_optimizer --no-robust --no-trade-band 0.03 --demo
+```
 
 ## What changed from the original notebook
 
@@ -78,7 +103,7 @@ app.py                         Streamlit dashboard
 portfolio_optimizer/
   data.py                      Yahoo Finance download + offline demo data
   analytics.py                 Estimators, risk metrics, attribution
-  optimizer.py                 Strategies, efficient frontier
+  optimizer.py                 Strategies, limits, CVaR LP, resampling, frontier
   indicators.py                RSI, MACD, Bollinger, signal score
   reasons.py                   Actions and plain-English reasons
   backtest.py                  Walk-forward backtest

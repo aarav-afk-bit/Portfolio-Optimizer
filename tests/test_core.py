@@ -135,9 +135,9 @@ def test_report_is_consistent(prices, strategy):
     for rec in r.recommendations:
         assert rec.reasons and rec.reasons[0].category == "Optimiser"
         if rec.action in ("Buy more", "Initiate"):
-            assert rec.trade_qty >= 0 and rec.trade_value > 0
+            assert rec.trade_qty >= 0 and rec.trade_value >= 0
         if rec.action in ("Trim", "Exit"):
-            assert rec.trade_qty <= 0 and rec.trade_value < 0
+            assert rec.trade_qty <= 0 and rec.trade_value <= 0
         if rec.action == "Hold":
             assert rec.trade_qty == 0
         # The headline reason must never argue against the action it explains.

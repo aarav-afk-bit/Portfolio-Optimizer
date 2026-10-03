@@ -9,11 +9,13 @@ import pandas as pd
 
 from . import analytics as an
 from .backtest import BacktestResult, walk_forward
-from .config import (DEFAULT_MAX_WEIGHT, DEFAULT_MIN_WEIGHT, DEFAULT_RISK_FREE_RATE, TRADING_DAYS)
+from .config import (DEFAULT_MAX_WEIGHT, DEFAULT_MIN_WEIGHT, DEFAULT_RISK_FREE_RATE, STRATEGIES, TRADING_DAYS,
+                     asset_class_for)
 from .formatting import currency_symbol
 from .indicators import TechnicalSnapshot, technical_snapshot
-from .optimizer import OptimizationResult, evaluate, optimize
-from .reasons import AssetRecommendation, Reason, build_recommendations, portfolio_reasons
+from .optimizer import (Constraints, OptimizationResult, ResampleResult, efficient_frontier, evaluate, optimize,
+                        random_portfolios, resample)
+from .reasons import AssetRecommendation, Reason, build_recommendations, cash_flow, portfolio_reasons
 
 
 @dataclass
@@ -28,6 +30,11 @@ class Settings:
     backtest_lookback: int = TRADING_DAYS
     backtest_rebalance_every: int = 63
     transaction_cost_bps: float = 10.0
+    class_cap: float | None = None  # max total weight per asset class (None = no cap)
+    max_turnover: float | None = None  # max one-way turnover per rebalance (None = no limit)
+    no_trade_band: float = 0.02  # skip trades that move a weight by less than this
+    robust: bool = True  # average weights over resampled histories (Michaud)
+    n_resamples: int = 100
 
 
 @dataclass
@@ -47,6 +54,7 @@ class PortfolioReport:
     optimal: OptimizationResult
     target: OptimizationResult  # optimal blended with current by rebalance_intensity
     min_vol: OptimizationResult
+    point: OptimizationResult  # single-estimate optimum (equals ``optimal`` when robust is off)
     risk_share_current: pd.Series
     risk_share_target: pd.Series
     asset_stats: pd.DataFrame
@@ -54,6 +62,14 @@ class PortfolioReport:
     technicals: dict[str, TechnicalSnapshot]
     recommendations: list[AssetRecommendation]
     summary: list[Reason]
+    asset_classes: dict[str, str] = field(default_factory=dict)
+    constraints: Constraints | None = None
+    resample: ResampleResult | None = None
+    comparison: pd.DataFrame | None = None  # metrics per strategy (point estimates)
+    comparison_weights: pd.DataFrame | None = None  # weights per strategy
+    cash: dict[str, float] = field(default_factory=dict)
+    frontier: pd.DataFrame | None = None
+    cloud: pd.DataFrame | None = None
     backtest: BacktestResult | None = None
     benchmark: pd.Series | None = None
     notes: list[str] = field(default_factory=list)
@@ -91,11 +107,25 @@ def analyze(
     total_invested = float(sum(h["qty"] * h["avg_price"] for h in holdings.values()))
     w_cur = values / total_value
 
+    classes = {t: (holdings[t].get("class") or asset_class_for(t)) for t in tickers}
+    cons = Constraints(min_weight=s.min_weight, max_weight=s.max_weight, asset_classes=classes,
+                       class_cap=s.class_cap, current=w_cur, max_turnover=s.max_turnover)
+
     current = evaluate(w_cur, mu, cov, rf, "current")
-    optimal = optimize(mu, cov, s.strategy, rf, s.min_weight, s.max_weight)
+    point = optimize(mu, cov, s.strategy, rf, constraints=cons, returns=returns)
+    rs = None
+    if s.robust:
+        rs = resample(returns, s.strategy, rf, cons, s.n_resamples, s.return_method)
+        optimal = evaluate(rs.mean, mu, cov, rf, s.strategy)
+        notes.append(f"Target = average of {len(rs.samples)} optimisations on block-bootstrapped histories "
+                     f"(Michaud resampling).")
+    else:
+        optimal = point
     k = float(np.clip(s.rebalance_intensity, 0, 1))
     target = evaluate(w_cur + k * (optimal.weights - w_cur), mu, cov, rf, "target")
-    min_vol = optimize(mu, cov, "min_volatility", rf, s.min_weight, s.max_weight)
+    min_vol = optimize(mu, cov, "min_volatility", rf, constraints=cons)
+
+    comparison, comparison_weights = compare_strategies(mu, cov, rf, cons, returns, w_cur)
 
     technicals = {t: technical_snapshot(t, prices[t]) for t in tickers}
 
@@ -129,7 +159,7 @@ def analyze(
     risk_cur = an.risk_contributions(w_cur.to_numpy(), cov)
     risk_tgt = an.risk_contributions(target.weights.to_numpy(), cov)
 
-    f, higher_better = an.strategy_objective(s.strategy, mu, cov, rf)
+    f, higher_better = an.strategy_objective(s.strategy, mu, cov, rf, returns)
     contrib = an.attribute_change(f, w_cur.to_numpy(), target.weights.to_numpy())
 
     ctx = dict(
@@ -141,6 +171,12 @@ def analyze(
         avg_corr=pd.Series(avg_corr), asset_mdd=asset_stats["max_drawdown"],
         current_w=w_cur, target_w=target.weights, optimal_w=optimal.weights,
         total_value=total_value, max_weight=s.max_weight, technicals=technicals,
+        band=s.no_trade_band, asset_classes=classes, class_cap=s.class_cap,
+        capped_classes=_capped_classes(optimal.weights, classes, s.class_cap),
+        max_turnover=s.max_turnover, optimal_turnover=float((optimal.weights - w_cur).abs().sum() / 2),
+        resample=rs,
+        cvar_current=an.historical_cvar(w_cur.to_numpy(), returns),
+        cvar_target=an.historical_cvar(target.weights.to_numpy(), returns),
         eff_current=an.effective_holdings(w_cur.to_numpy()),
         eff_target=an.effective_holdings(target.weights.to_numpy()),
     )
@@ -151,7 +187,9 @@ def analyze(
         try:
             bt = walk_forward(prices, w_cur, s.strategy, rf, s.min_weight, s.max_weight,
                               s.backtest_lookback, s.backtest_rebalance_every, s.transaction_cost_bps,
-                              benchmark, s.return_method)
+                              benchmark, s.return_method,
+                              constraints=Constraints(s.min_weight, s.max_weight, classes, s.class_cap,
+                                                      max_turnover=s.max_turnover))
         except ValueError as e:
             notes.append(f"Backtest skipped: {e}")
 
@@ -161,7 +199,44 @@ def analyze(
         settings=s, tickers=tickers, currency=ctx["currency"], as_of=prices.index[-1], prices=prices,
         returns=returns, mu=mu, cov_annual=cov, correlation=corr, total_value=total_value,
         total_invested=total_invested, current=current, optimal=optimal, target=target, min_vol=min_vol,
+        point=point, asset_classes=classes, constraints=cons, resample=rs, comparison=comparison,
+        comparison_weights=comparison_weights, cash=cash_flow(recs),
+        frontier=efficient_frontier(mu, cov, constraints=cons), cloud=random_portfolios(mu, cov, rf),
         risk_share_current=risk_cur, risk_share_target=risk_tgt, asset_stats=asset_stats,
         portfolio_stats=portfolio_stats, technicals=technicals, recommendations=recs, summary=summary,
         backtest=bt, benchmark=benchmark, notes=notes,
     )
+
+
+def _capped_classes(weights: pd.Series, classes: dict[str, str], cap: float | None) -> set[str]:
+    if cap is None or cap >= 1:
+        return set()
+    totals: dict[str, float] = {}
+    for t, w in weights.items():
+        totals[classes[t]] = totals.get(classes[t], 0.0) + float(w)
+    return {c for c, v in totals.items() if v >= cap - 0.005}
+
+
+def compare_strategies(mu: pd.Series, cov: pd.DataFrame, rf: float, cons: Constraints,
+                       returns: pd.DataFrame, w_cur: pd.Series) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Point-estimate optimum of every strategy under the same limits, plus your current mix."""
+    weights = {"Your current mix": w_cur}
+    for key, name in STRATEGIES.items():
+        try:
+            weights[name] = optimize(mu, cov, key, rf, constraints=cons, returns=returns, n_starts=4).weights
+        except ValueError:
+            continue
+    rows = {}
+    for name, w in weights.items():
+        x = w.to_numpy()
+        daily = returns @ x
+        rows[name] = {
+            "Expected return": an.portfolio_return(x, mu),
+            "Volatility": an.portfolio_volatility(x, cov),
+            "Sharpe": an.sharpe_ratio(x, mu, cov, rf),
+            "CVaR 95% (daily)": an.historical_cvar(x, returns),
+            "Max drawdown": float(an.drawdown((1 + daily).cumprod()).min()),
+            "Effective holdings": an.effective_holdings(x),
+            "Turnover": float((w - w_cur).abs().sum() / 2),
+        }
+    return pd.DataFrame(rows).T, pd.DataFrame(weights).T
