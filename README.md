@@ -15,8 +15,10 @@ python -m portfolio_optimizer   # text report in the terminal
 python -m portfolio_optimizer --demo   # same, with synthetic prices (no internet)
 ```
 
-Edit your holdings in the sidebar. Tickers use Yahoo Finance symbols (`.NS` for NSE, `.BO` for BSE).
-Add a ticker with quantity 0 to see whether it's worth buying.
+Edit your holdings in the sidebar, or import them from a CSV (`Ticker, Qty, Avg price`, optional `Class`)
+via **Import / export holdings**. Tickers use Yahoo Finance symbols (`.NS` for NSE, `.BO` for BSE).
+Add a ticker with quantity 0 to see whether it's worth buying. Position, asset-class and turnover limits,
+the no-trade band and robust resampling are under **Limits & robustness**.
 
 ## What you get
 
@@ -26,7 +28,9 @@ Add a ticker with quantity 0 to see whether it's worth buying.
 | **Action plan** | Trade list in units and rupees (CSV download), each holding's exact share of the improvement, and a card per holding with its reasons |
 | **Allocation** | Current vs target weights, asset-class mix, concentration metrics |
 | **Risk** | Share of capital vs share of risk, correlation heatmap, drawdowns, VaR/CVaR/Sortino/beta |
-| **Efficient frontier** | Random portfolios, the frontier under your position limits, the capital market line, current → target |
+| **Efficient frontier** | Random portfolios, the frontier under your limits, the capital market line, current → target |
+| **Compare strategies** | Every strategy's optimum under the same limits: Sharpe, volatility and worst-day loss side by side, plus weights |
+| **What-if** | Type your own weights and see them scored against your current mix and the plan, with limit checks |
 | **Technicals** | Price with 50/200-day averages and Bollinger bands, RSI, MACD, and a −100…+100 score |
 | **Backtest** | Walk-forward test with no hindsight vs your current mix, equal weight and Nifty 50 |
 

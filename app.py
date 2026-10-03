@@ -9,7 +9,7 @@ import streamlit as st
 
 from portfolio_optimizer import analytics as an, charts, ui
 from portfolio_optimizer.config import (DEFAULT_BENCHMARK, DEFAULT_PORTFOLIO, DEFAULT_RISK_FREE_RATE,
-                                        STRATEGIES, label_for)
+                                        STRATEGIES, asset_class_for, label_for)
 from portfolio_optimizer.data import DataError, clean_prices, demo_prices, fetch_prices
 from portfolio_optimizer.formatting import fmt_compact, fmt_pct
 from portfolio_optimizer.report import PortfolioReport, Settings, analyze
@@ -53,7 +53,7 @@ def load_prices(tickers: tuple[str, ...], benchmark: str, start: str, source: st
 
 @st.cache_data(show_spinner=False)
 def run(holdings_items: tuple, benchmark: str, start: str, source: str, settings: Settings):
-    holdings = {t: {"qty": q, "avg_price": a} for t, q, a in holdings_items}
+    holdings = {t: {"qty": q, "avg_price": a, "class": c} for t, q, a, c in holdings_items}
     prices, bench, used, warning = load_prices(tuple(holdings), benchmark, start, source)
     return analyze(holdings, prices, settings, bench), used, warning
 
@@ -62,23 +62,61 @@ def run(holdings_items: tuple, benchmark: str, start: str, source: str, settings
 # Sidebar
 # --------------------------------------------------------------------------
 
+HOLDING_COLS = ["Ticker", "Qty", "Avg price", "Class"]
+
 if "holdings_df" not in st.session_state:
     st.session_state.holdings_df = pd.DataFrame(
-        [{"Ticker": t, "Qty": v["qty"], "Avg price": v["avg_price"]} for t, v in DEFAULT_PORTFOLIO.items()]
+        [{"Ticker": t, "Qty": v["qty"], "Avg price": v["avg_price"], "Class": asset_class_for(t)}
+         for t, v in DEFAULT_PORTFOLIO.items()]
     )
+    st.session_state.editor_version = 0
+
+
+def load_holdings_csv(file) -> pd.DataFrame:
+    """Accepts Ticker, Qty/Quantity, Avg price; Class is optional."""
+    df = pd.read_csv(file)
+    df.columns = [c.strip().lower() for c in df.columns]
+    rename = {"symbol": "Ticker", "ticker": "Ticker", "qty": "Qty", "quantity": "Qty", "avg price": "Avg price",
+              "avg_price": "Avg price", "average price": "Avg price", "class": "Class", "asset class": "Class"}
+    df = df.rename(columns={c: rename[c] for c in df.columns if c in rename})
+    missing = {"Ticker", "Qty", "Avg price"} - set(df.columns)
+    if missing:
+        raise ValueError(f"CSV is missing column(s): {', '.join(sorted(missing))}")
+    if "Class" not in df:
+        df["Class"] = ""
+    df["Ticker"] = df["Ticker"].astype(str).str.strip().str.upper()
+    df["Class"] = [c if isinstance(c, str) and c.strip() else asset_class_for(t) for t, c in zip(df["Ticker"], df["Class"])]
+    return df[HOLDING_COLS]
+
 
 with st.sidebar:
     st.markdown("### 📈 Portfolio Optimizer")
     st.caption("Enter your holdings, pick a strategy, and get a rebalancing plan with the reasons behind it.")
 
+    with st.popover("Import / export holdings", icon=":material/upload_file:", width="stretch"):
+        up = st.file_uploader("Upload a CSV with Ticker, Qty, Avg price (Class optional)", type="csv")
+        if up is not None and st.session_state.get("uploaded_id") != up.file_id:
+            try:
+                st.session_state.holdings_df = load_holdings_csv(up)
+                st.session_state.uploaded_id = up.file_id
+                st.session_state.editor_version += 1
+                st.rerun()
+            except Exception as e:  # malformed file
+                st.error(f"Couldn't read that file: {e}")
+        st.download_button("Download current holdings", st.session_state.holdings_df.to_csv(index=False),
+                           "holdings.csv", "text/csv", icon=":material/download:", width="stretch")
+
     with st.form("inputs", border=False):
         st.markdown("**Holdings**")
         edited = st.data_editor(
-            st.session_state.holdings_df, num_rows="dynamic", hide_index=True, use_container_width=True,
+            st.session_state.holdings_df, num_rows="dynamic", hide_index=True, width="stretch",
+            key=f"holdings_editor_{st.session_state.editor_version}",
             column_config={
-                "Ticker": st.column_config.TextColumn(required=True, help="Yahoo symbol, e.g. HAL.NS"),
-                "Qty": st.column_config.NumberColumn(min_value=0, step=1, format="%d", width="small"),
-                "Avg price": st.column_config.NumberColumn(min_value=0.0, format="%.2f"),
+                "Ticker": st.column_config.TextColumn(required=True, help="Yahoo symbol, e.g. HAL.NS", width=112),
+                "Qty": st.column_config.NumberColumn(min_value=0, step=1, format="%d", width=52),
+                "Avg price": st.column_config.NumberColumn(min_value=0.0, format="%.2f", width=74),
+                "Class": st.column_config.TextColumn(width=104, help="Asset class for class caps, e.g. Indian equity. "
+                                                          "Leave blank to auto-fill."),
             },
         )
         st.caption("Use Yahoo symbols (`.NS` for NSE, `.BO` for BSE). Add a ticker with quantity 0 "
@@ -96,7 +134,21 @@ with st.sidebar:
                               help="100% moves fully to the optimal weights; 50% goes halfway.")
         source = st.radio("Price data", [LIVE, DEMO], horizontal=True)
 
-        with st.expander("Advanced settings"):
+        with st.expander("Limits & robustness", icon=":material/tune:"):
+            class_cap = st.slider("Max per asset class", 20, 100, 100, step=5, format="%d%%",
+                                  help="Caps the total weight of each asset class (see the Class column). "
+                                       "100% = no cap.")
+            max_to = st.slider("Max turnover per rebalance", 5, 100, 100, step=5, format="%d%%",
+                               help="Limits how much of the portfolio is bought (and sold) in one go. "
+                                    "100% = no limit.")
+            band = st.slider("No-trade band", 0.0, 10.0, 2.0, step=0.5, format="%.1f pp",
+                             help="Skip trades that would move a holding's weight by less than this.")
+            robust = st.toggle("Robust (resampled) weights", True,
+                               help="Re-optimise on many bootstrapped price histories and average the results. "
+                                    "Gives steadier targets and a confidence range for every weight.")
+            n_res = st.select_slider("Resamples", [50, 100, 200], 100, disabled=not robust)
+
+        with st.expander("Advanced settings", icon=":material/settings:"):
             rf = st.number_input("Risk-free rate (% a year)", 0.0, 15.0, DEFAULT_RISK_FREE_RATE * 100, 0.25,
                                  help="Sharpe ratios measure return above this. Default ≈ Indian 91-day T-bill.")
             min_w = st.slider("Min position size", 0, 20, 0, step=1, format="%d%%")
@@ -113,13 +165,17 @@ with st.sidebar:
                                format_func={21: "Monthly", 63: "Quarterly", 126: "Half-yearly"}.get)
             cost = st.number_input("Trading cost (bps per trade)", 0.0, 100.0, 10.0, 5.0)
 
-        st.form_submit_button("Analyse portfolio", type="primary", use_container_width=True)
+        st.form_submit_button("Analyse portfolio", type="primary", width="stretch")
 
 # Validate holdings
 h = edited.copy()
 h["Ticker"] = h["Ticker"].astype(str).str.strip().str.upper()
 h = h[h["Ticker"].ne("") & h["Ticker"].ne("NONE") & h["Ticker"].ne("NAN")]
 h[["Qty", "Avg price"]] = h[["Qty", "Avg price"]].fillna(0)
+if "Class" not in h:
+    h["Class"] = ""
+h["Class"] = [c.strip() if isinstance(c, str) and c.strip() else asset_class_for(t)
+              for t, c in zip(h["Ticker"], h["Class"])]
 if h.empty:
     st.info("Add at least one holding in the sidebar to get started.")
     st.stop()
@@ -133,8 +189,11 @@ settings = Settings(
     strategy=strategy, risk_free_rate=rf / 100, min_weight=min_w / 100, max_weight=max_w / 100,
     return_method=ret_method, rebalance_intensity=intensity / 100, run_backtest=run_bt,
     backtest_rebalance_every=reb, transaction_cost_bps=cost,
+    class_cap=None if class_cap >= 100 else class_cap / 100,
+    max_turnover=None if max_to >= 100 else max_to / 100,
+    no_trade_band=band / 100, robust=robust, n_resamples=n_res,
 )
-items = tuple((t, float(q), float(a)) for t, q, a in h[["Ticker", "Qty", "Avg price"]].to_numpy())
+items = tuple((t, float(q), float(a), c) for t, q, a, c in h[HOLDING_COLS].to_numpy())
 
 try:
     with st.spinner("Fetching prices and optimising…"):
@@ -154,6 +213,12 @@ recs = sorted(r.recommendations, key=lambda x: -abs(x.trade_value))
 pnl = r.total_value - r.total_invested
 pills = [(STRATEGIES[strategy], ""), (f"Prices to {r.as_of:%d %b %Y}", ""),
          (f"{len(r.tickers)} holdings", ""), (f"Max position {max_w}%", "")]
+if settings.class_cap:
+    pills.append((f"Max {class_cap}% per class", ""))
+if settings.max_turnover:
+    pills.append((f"Turnover ≤ {max_to}%", ""))
+if robust:
+    pills.append((f"Robust · {len(r.resample.samples)} resamples", ""))
 pills.append(("Demo data — not real prices", "warn") if used_source == DEMO else ("Live prices", ""))
 n_trades = sum(x.action != "Hold" for x in recs)
 st.html(ui.hero(
@@ -194,7 +259,8 @@ headline = (f"Shift toward {', '.join(x.label for x in recs if x.action in ('Buy
             f"Rebalance to cut volatility from {fmt_pct(cur.volatility)} to {fmt_pct(tgt.volatility)}."
             if strategy == "min_volatility" else
             "Rebalance so each holding pulls its weight on risk." if strategy == "risk_parity" else
-            "Rebalance to shrink your losses on the worst days." if strategy == "min_cvar" else
+            f"Rebalance to cut the average worst-day loss from {fmt_pct(r.comparison.loc['Your current mix', 'CVaR 95% (daily)'], 2)}"
+            f" to {fmt_pct(an.historical_cvar(tgt.weights.to_numpy(), r.returns), 2)}." if strategy == "min_cvar" else
             "Rebalance toward holdings that offset each other.")
 if n_trades == 0:
     headline = "Your portfolio is already close to optimal. No trades needed."
@@ -207,34 +273,45 @@ st.html(f'<div class="card verdict"><div><div class="hero-eyebrow" style="color:
 # --------------------------------------------------------------------------
 
 tabs = st.tabs([":material/checklist: Action plan", ":material/donut_large: Allocation", ":material/shield: Risk",
-                ":material/show_chart: Efficient frontier", ":material/candlestick_chart: Technicals",
+                ":material/show_chart: Efficient frontier", ":material/compare_arrows: Compare strategies",
+                ":material/science: What-if", ":material/candlestick_chart: Technicals",
                 ":material/history: Backtest", ":material/info: Method"])
+TAB_ACTION, TAB_ALLOC, TAB_RISK, TAB_FRONTIER, TAB_COMPARE, TAB_WHATIF, TAB_TECH, TAB_BT, TAB_METHOD = tabs
 
-with tabs[0]:
+with TAB_ACTION:
     trades = pd.DataFrame([{
-        "Ticker": x.ticker, "Action": x.action, "Trade (units)": x.trade_qty,
+        "Ticker": x.ticker, "Action": x.action, "Units": x.trade_qty,
         "Trade value": fmt_compact(x.trade_value, sym, signed=True) if x.trade_qty else "–",
-        "Price": round(x.price, 2), "Holding now": x.qty,
         "Weight now": x.current_weight, "Target weight": x.target_weight,
-        "Timing": x.timing, "Technicals": round(x.technical.score),
+        "Timing": x.timing, "Confidence": x.confidence or "–", "Technicals": round(x.technical.score),
     } for x in recs])
     st.html('<div class="section-title">Trade list</div>'
             '<div class="section-sub">Quantities are rounded down to whole units at the latest price.</div>')
     st.dataframe(
-        trades, hide_index=True, use_container_width=True,
+        trades, hide_index=True, width="stretch",
         column_config={
-            "Price": st.column_config.NumberColumn(format=f"{sym}%.2f"),
-            "Holding now": st.column_config.NumberColumn(format="%,d"),
-            "Trade (units)": st.column_config.NumberColumn(format="%+,d"),
-            "Weight now": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1),
-            "Target weight": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1),
+            "Units": st.column_config.NumberColumn(format="%+,d", help="Whole units to buy (+) or sell (−)"),
+            "Weight now": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1, width="small"),
+            "Target weight": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1,
+                                                             width="small"),
             "Technicals": st.column_config.NumberColumn(help="Score from -100 (strongly bearish) to +100 "
                                                              "(strongly bullish)", format="%+d"),
         },
     )
-    csv = trades.assign(**{"Trade value": [round(x.trade_value) for x in recs]})
-    st.download_button("Download trade list (CSV)", csv.to_csv(index=False), "rebalance_plan.csv",
-                       "text/csv", icon=":material/download:")
+    cash = r.cash
+    net = cash["net"]
+    net_text = (f"you need to add <b>{fmt_compact(net, sym)}</b>" if net > 0 else
+                f"<b>{fmt_compact(-net, sym)}</b> is left over as cash" if net < 0 else "the trades fund each other")
+    c1, c2 = st.columns([3, 1], vertical_alignment="center")
+    with c1:
+        st.html(f'<div class="cashline"><span class="chip">Sales raise <b>{fmt_compact(cash["sells"], sym)}</b></span>'
+                f'<span class="chip">Purchases cost <b>{fmt_compact(cash["buys"], sym)}</b></span>'
+                f'<span class="cashnote">so {net_text}.</span></div>')
+    with c2:
+        csv = trades.assign(**{"Trade value": [round(x.trade_value) for x in recs],
+                               "Price": [round(x.price, 2) for x in recs], "Holding now": [x.qty for x in recs]})
+        st.download_button("Trade list CSV", csv.to_csv(index=False), "rebalance_plan.csv",
+                           "text/csv", icon=":material/download:", width="stretch")
 
     if strategy != "risk_parity":
         obj = {"max_sharpe": "Sharpe ratio", "min_volatility": "volatility (pp)", "min_cvar": "daily CVaR (pp)",
@@ -252,19 +329,24 @@ with tabs[0]:
         with cols[i % 2]:
             st.html(ui.rec_card(rec, sym, scale))
 
-with tabs[1]:
+with TAB_ALLOC:
     c1, c2 = st.columns([3, 2], gap="large")
     with c1:
         st.html('<div class="section-title">Current vs target weights</div>'
-                '<div class="section-sub">Share of portfolio value in each holding.</div>')
+                '<div class="section-sub">Share of portfolio value in each holding.'
+                + (' Whiskers show the 10–90% range across resampled histories: long whiskers mean the data '
+                   'only loosely pins that weight.' if r.resample is not None and intensity == 100 else '')
+                + '</div>')
         st.plotly_chart(charts.allocation_bars(r), config=PLOTLY_CONFIG, theme=None)
     with c2:
         st.html('<div class="section-title">By asset class</div>'
-                '<div class="section-sub">How the rebalance changes your exposure.</div>')
+                '<div class="section-sub">How the rebalance changes your exposure.'
+                + (f' Each class is capped at {class_cap}%.' if settings.class_cap else '')
+                + ' Edit classes in the Class column of your holdings.</div>')
         cls = pd.DataFrame([{"Asset class": x.asset_class, "Now": x.current_weight, "Target": x.target_weight}
                             for x in recs])
         cls = cls.groupby("Asset class", as_index=False).sum().sort_values("Target", ascending=False)
-        st.dataframe(cls, hide_index=True, use_container_width=True, column_config={
+        st.dataframe(cls, hide_index=True, width="stretch", column_config={
             "Now": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1, width="small"),
             "Target": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1, width="small"),
         })
@@ -281,7 +363,7 @@ with tabs[1]:
                          "How much volatility cancels out because holdings don't move together.")
                 + "</div>")
 
-with tabs[2]:
+with TAB_RISK:
     c1, c2 = st.columns(2, gap="large")
     with c1:
         st.html('<div class="section-title">Capital vs risk, today</div>'
@@ -312,13 +394,13 @@ with tabs[2]:
         stats.rename(columns={"cagr": "CAGR", "volatility": "Volatility", "sharpe": "Sharpe", "sortino": "Sortino",
                               "max_drawdown": "Max drawdown", "calmar": "Calmar", "var_95": "VaR 95%",
                               "cvar_95": "CVaR 95%", "beta": "Beta"}),
-        use_container_width=True,
+        width="stretch",
         column_config={c: st.column_config.NumberColumn(format="percent")
                        for c in ["CAGR", "Volatility", "Max drawdown", "VaR 95%", "CVaR 95%"]}
         | {c: st.column_config.NumberColumn(format="%.2f") for c in ["Sharpe", "Sortino", "Calmar", "Beta"]},
     )
 
-with tabs[3]:
+with TAB_FRONTIER:
     st.html('<div class="section-title">Efficient frontier</div>'
             '<div class="section-sub">Each dot is a random mix of your holdings, shaded by Sharpe ratio. The black curve is '
             'the best return available at each level of risk under your position limits. Moving from the orange circle '
@@ -330,13 +412,123 @@ with tabs[3]:
         "Optimal (100%)": [r.optimal.expected_return, r.optimal.volatility, r.optimal.sharpe],
         "Min volatility": [r.min_vol.expected_return, r.min_vol.volatility, r.min_vol.sharpe],
     }, index=["Expected return", "Volatility", "Sharpe"]).T
-    st.dataframe(comp, use_container_width=True, column_config={
+    st.dataframe(comp, width="stretch", column_config={
         "Expected return": st.column_config.NumberColumn(format="percent"),
         "Volatility": st.column_config.NumberColumn(format="percent"),
         "Sharpe": st.column_config.NumberColumn(format="%.2f"),
     })
 
-with tabs[4]:
+with TAB_COMPARE:
+    st.html('<div class="section-title">Every strategy under your limits</div>'
+            '<div class="section-sub">Single-estimate optimum of each strategy with the same position, asset-class '
+            'and turnover limits, next to your current mix. Use it to pick the strategy that matches what you care '
+            'about: return, smoothness, or protection on bad days.</div>')
+    comp = r.comparison
+    chosen = STRATEGIES[strategy]
+    c1, c2 = st.columns([1.9, 1], gap="large")
+    with c1:
+        st.plotly_chart(charts.strategy_bars(r), config=PLOTLY_CONFIG, theme=None)
+    with c2:
+        best = {"Sharpe": comp["Sharpe"].idxmax(), "Volatility": comp["Volatility"].idxmin(),
+                "CVaR 95% (daily)": comp["CVaR 95% (daily)"].idxmin(), "Max drawdown": comp["Max drawdown"].idxmax()}
+        st.html('<div class="card"><h3>Who wins what</h3><div class="lede">Best value of each metric '
+                '(expected or in-sample).</div>' + ui.reason_list([
+                    ui.Reason("positive", "Sharpe", f"{best['Sharpe']} ({comp.loc[best['Sharpe'], 'Sharpe']:.2f})"),
+                    ui.Reason("positive", "Volatility",
+                              f"{best['Volatility']} ({fmt_pct(comp.loc[best['Volatility'], 'Volatility'])})"),
+                    ui.Reason("positive", "Tail risk", f"{best['CVaR 95% (daily)']} "
+                              f"({fmt_pct(comp.loc[best['CVaR 95% (daily)'], 'CVaR 95% (daily)'], 2)} a day)"),
+                    ui.Reason("positive", "Drawdown", f"{best['Max drawdown']} "
+                              f"({fmt_pct(comp.loc[best['Max drawdown'], 'Max drawdown'])})"),
+                    ui.Reason("neutral", "Selected", f"{chosen}" + (" with resampling, so its final weights differ "
+                              "slightly from the single-estimate row." if robust else ".")),
+                ]) + "</div>")
+    st.dataframe(
+        comp.rename(index={chosen: f"{chosen}  ← selected"}), width="stretch",
+        column_config={c: st.column_config.NumberColumn(format="percent")
+                       for c in ["Expected return", "Volatility", "CVaR 95% (daily)", "Max drawdown", "Turnover"]}
+        | {"Sharpe": st.column_config.NumberColumn(format="%.2f"),
+           "Effective holdings": st.column_config.NumberColumn(format="%.1f")},
+    )
+    st.html('<div class="section-title" style="margin-top:12px">Weights by strategy</div>')
+    wts = r.comparison_weights.rename(columns=label_for, index={chosen: f"{chosen}  ← selected"})
+    st.dataframe(wts, width="stretch", column_config={
+        c: st.column_config.NumberColumn(format="percent") for c in wts.columns})
+
+
+@st.fragment
+def whatif_tab():
+    st.html('<div class="section-title">Try your own mix</div>'
+            '<div class="section-sub">Type the weights you have in mind. They are scaled to add up to 100% and '
+            'scored with the same risk model as the plan. Only this tab reruns while you edit.</div>')
+    base = pd.DataFrame({"Asset": [label_for(t) for t in r.tickers],
+                         "Your mix %": (cur.weights * 100).round(1).to_numpy(),
+                         "Plan target %": (tgt.weights * 100).round(1).to_numpy()}, index=r.tickers)
+    c1, c2 = st.columns([1.15, 1.4], gap="large")
+    with c1:
+        mix = st.data_editor(base, hide_index=True, width="stretch", disabled=["Asset", "Plan target %"],
+                             key="whatif_editor", column_config={
+                                 "Asset": st.column_config.TextColumn(width="medium"),
+                                 "Your mix %": st.column_config.NumberColumn(min_value=0.0, max_value=100.0,
+                                                                             step=0.5, format="%.1f", width="small"),
+                                 "Plan target %": st.column_config.NumberColumn(format="%.1f", width="small")})
+        raw = mix["Your mix %"].fillna(0).clip(lower=0).to_numpy()
+        if raw.sum() <= 0:
+            st.warning("Give at least one holding a positive weight.")
+            return
+        w = pd.Series(raw / raw.sum(), index=r.tickers)
+        if abs(raw.sum() - 100) > 0.05:
+            st.caption(f"Your weights add up to {raw.sum():.1f}%, so they were scaled to 100%.")
+    x = w.to_numpy()
+
+    def metrics(v):
+        daily = r.returns @ v
+        return {"Expected return": an.portfolio_return(v, r.mu), "Volatility": an.portfolio_volatility(v, r.cov_annual),
+                "Sharpe": an.sharpe_ratio(v, r.mu, r.cov_annual, r.settings.risk_free_rate),
+                "CVaR 95% (daily)": an.historical_cvar(v, r.returns),
+                "Max drawdown": float(an.drawdown((1 + daily).cumprod()).min()),
+                "Effective holdings": an.effective_holdings(v)}
+
+    m_cur, m_tgt, m_you = metrics(cur.weights.to_numpy()), metrics(tgt.weights.to_numpy()), metrics(x)
+    with c2:
+        st.html('<div class="kpis" style="grid-template-columns:repeat(3,minmax(0,1fr))">' + "".join([
+            ui.kpi("Expected return", fmt_pct(m_you["Expected return"]),
+                   f"plan {fmt_pct(m_tgt['Expected return'])} · now {fmt_pct(m_cur['Expected return'])}"),
+            ui.kpi("Volatility", fmt_pct(m_you["Volatility"]),
+                   f"plan {fmt_pct(m_tgt['Volatility'])} · now {fmt_pct(m_cur['Volatility'])}"),
+            ui.kpi("Sharpe ratio", f"{m_you['Sharpe']:.2f}",
+                   f"plan {m_tgt['Sharpe']:.2f} · now {m_cur['Sharpe']:.2f}"),
+        ]) + "</div>")
+        verdicts = []
+        gap = m_you["Sharpe"] - m_tgt["Sharpe"]
+        verdicts.append(ui.Reason("positive" if gap >= -0.02 else "negative", "Sharpe",
+                                  "Your mix matches or beats the plan's Sharpe ratio." if gap >= -0.02 else
+                                  f"The plan earns {-gap:.2f} more Sharpe for the same risk budget."))
+        d_cvar = m_you["CVaR 95% (daily)"] - m_cur["CVaR 95% (daily)"]
+        verdicts.append(ui.Reason("positive" if d_cvar < -1e-4 else "negative" if d_cvar > 1e-4 else "neutral",
+                                  "Tail risk", f"Average loss on the worst 5% of days: "
+                                  f"{fmt_pct(m_you['CVaR 95% (daily)'], 2)} (now {fmt_pct(m_cur['CVaR 95% (daily)'], 2)})."))
+        breaches = [label_for(t) for t, v in w.items() if v > r.settings.max_weight + 1e-6]
+        if breaches:
+            verdicts.append(ui.Reason("negative", "Limits", f"Above your {fmt_pct(r.settings.max_weight, 0)} "
+                                      f"position cap: {', '.join(breaches)}."))
+        if r.settings.class_cap:
+            totals = w.groupby(pd.Series(r.asset_classes)).sum()
+            over = [f"{c} {fmt_pct(v, 0)}" for c, v in totals.items() if v > r.settings.class_cap + 1e-6]
+            if over:
+                verdicts.append(ui.Reason("negative", "Limits", f"Over the {fmt_pct(r.settings.class_cap, 0)} "
+                                          f"asset-class cap: {', '.join(over)}."))
+        st.html(f'<div class="card">{ui.reason_list(verdicts)}</div>')
+    st.plotly_chart(charts.frontier_chart(r, extra={"Your mix": w}), config=PLOTLY_CONFIG, theme=None,
+                    key="whatif_frontier")
+
+
+with TAB_WHATIF:
+    whatif_tab()
+
+
+@st.fragment
+def technicals_tab():
     pick = st.segmented_control("Holding", r.tickers, default=recs[0].ticker, format_func=label_for,
                                 key="tech_pick") or recs[0].ticker
     snap = r.technicals[pick]
@@ -357,13 +549,17 @@ with tabs[4]:
     st.dataframe(pd.DataFrame([{
         "Asset": label_for(t), "Price": s.price, "RSI": round(s.rsi, 1),
         **{sig.name: sig.value for sig in s.signals}, "Score": round(s.score), "Stance": s.stance,
-    } for t, s in r.technicals.items()]), hide_index=True, use_container_width=True,
+    } for t, s in r.technicals.items()]), hide_index=True, width="stretch",
         column_config={"Price": st.column_config.NumberColumn(format="%.2f"),
                        "Score": st.column_config.NumberColumn(format="%+d")})
     st.caption("Technicals decide *timing*, not the target weights. The optimiser ignores them; they only "
                "suggest whether to trade now or stagger.")
 
-with tabs[5]:
+
+with TAB_TECH:
+    technicals_tab()
+
+with TAB_BT:
     if r.backtest is None:
         st.info("Backtest is off or there isn't enough history (needs > 1 year). Turn it on under Advanced settings.")
     else:
@@ -377,7 +573,7 @@ with tabs[5]:
             bt.stats.rename(columns={"cagr": "CAGR", "volatility": "Volatility", "sharpe": "Sharpe",
                                      "sortino": "Sortino", "max_drawdown": "Max drawdown", "calmar": "Calmar",
                                      "var_95": "VaR 95%", "cvar_95": "CVaR 95%", "beta": "Beta"}),
-            use_container_width=True,
+            width="stretch",
             column_config={c: st.column_config.NumberColumn(format="percent")
                            for c in ["CAGR", "Volatility", "Max drawdown", "VaR 95%", "CVaR 95%"]}
             | {c: st.column_config.NumberColumn(format="%.2f") for c in ["Sharpe", "Sortino", "Calmar", "Beta"]},
@@ -386,7 +582,7 @@ with tabs[5]:
                 '<div class="section-sub">Stable weights mean the signal is robust. Wild swings mean it is chasing noise.</div>')
         st.plotly_chart(charts.backtest_weights_chart(r), config=PLOTLY_CONFIG, theme=None)
 
-with tabs[6]:
+with TAB_METHOD:
     st.markdown(f"""
 #### How the plan is built
 1. **Prices.** Daily adjusted closes from Yahoo Finance since {start:%b %Y}, aligned across holdings.
@@ -397,13 +593,21 @@ with tabs[6]:
 4. **Optimisation.** Long-only, fully invested, with your min/max position limits, solved with SLSQP from
    several starting points. Sharpe ratios are measured against a **{rf:.2f}% risk-free rate**
    (the original used 0%, which flatters every risky asset).
-5. **Reasons.** The headline reason for each trade comes from an exact **attribution** of the objective's
+5. **Limits.** Position caps, asset-class caps and a turnover limit are enforced in every strategy,
+   the frontier and the backtest. Impossible combinations are caught up front with the exact
+   minimum you'd need (e.g. "your limits require trading at least 30%").
+6. **Robust weights.** With resampling on, the target averages 100+ optimisations on block-bootstrapped
+   price histories (Michaud). Each holding's 10–90% range drives its confidence label.
+7. **Tail risk.** The minimum-CVaR strategy solves the Rockafellar–Uryasev linear program on historical
+   daily returns: the lowest possible average loss on the worst 5% of days.
+8. **Reasons.** The headline reason for each trade comes from an exact **attribution** of the objective's
    change: we integrate its gradient along the path from your current to your target weights. Each
    holding's share sums to the total, so the "why" always matches the "what".
-6. **Technicals.** RSI (Wilder), MACD, Bollinger bands, 50/200-day averages and 6-month momentum feed a
+9. **Technicals.** RSI (Wilder), MACD, Bollinger bands, 50/200-day averages and 6-month momentum feed a
    −100…+100 score. It only drives *timing* advice, never the weights.
-7. **Backtest.** Walk-forward with trailing 12-month estimates, trading costs, and comparison to your
-   current mix, equal weight and the benchmark.
+10. **Backtest.** Walk-forward with trailing 12-month estimates, your limits, trading costs, and
+    comparison to your current mix, equal weight and the benchmark. Each rebalance uses a single
+    estimate (no resampling) to keep it fast.
 
 #### Caveats
 - Expected returns are estimates from the past. They are the least reliable input, even after shrinkage.

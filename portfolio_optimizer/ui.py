@@ -26,7 +26,7 @@ CSS = """
 [data-testid="stHeader"] { background: rgba(245,247,251,.85); backdrop-filter: blur(6px); }
 [data-testid="stSidebar"] { border-right: 1px solid var(--line); }
 @media (min-width: 900px) {
-  section[data-testid="stSidebar"][aria-expanded="true"] { width: 390px !important; min-width: 390px !important; }
+  section[data-testid="stSidebar"][aria-expanded="true"] { width: 440px !important; min-width: 440px !important; }
 }
 @media (max-width: 640px) {
   .hero { padding: 20px; } .hero-title { font-size: 24px; }
@@ -56,7 +56,7 @@ h1, h2, h3 { letter-spacing: -0.02em; }
 .kpi { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
   padding: 14px 16px; box-shadow: var(--shadow); }
 .kpi-label { font-size: 12px; color: var(--ink-2); font-weight: 500; display: flex; justify-content: space-between; }
-.kpi-value { font-size: 22px; font-weight: 700; color: var(--ink); margin-top: 4px; letter-spacing: -0.02em; white-space: nowrap; }
+.kpi-value { font-size: clamp(17px, 1.45vw, 22px); font-weight: 700; color: var(--ink); margin-top: 4px; letter-spacing: -0.02em; white-space: nowrap; }
 .kpi-value .arrow { color: var(--muted); font-weight: 500; font-size: 15px; margin: 0 3px; }
 .kpi-value .from { color: var(--muted); font-weight: 600; font-size: 15px; }
 .kpi-sub { font-size: 12px; margin-top: 2px; color: var(--ink-2); }
@@ -122,6 +122,12 @@ details.more summary::-webkit-details-marker { display: none; }
 details.more summary:after { content: " ▾"; color: var(--muted); }
 details.more[open] summary:after { content: " ▴"; }
 
+.cashline { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; color: var(--ink-2); }
+.cashline .chip { margin: 0; }
+.cashnote b { color: var(--ink); }
+.chip.conf-High { background: var(--good-soft); border-color: #cdebd7; }
+.chip.conf-Medium { background: var(--warn-soft); border-color: #f6e2bd; }
+.chip.conf-Low { background: var(--bad-soft); border-color: #f5cfcf; }
 .score { display: inline-block; min-width: 34px; text-align: center; font-weight: 700; }
 
 /* Tabs */
@@ -192,6 +198,11 @@ def rec_card(rec: AssetRecommendation, currency: str, scale: float) -> str:
         f'<span class="chip">Exp. return <b>{fmt_pct(rec.expected_return)}</b></span>',
         f'<span class="chip">Volatility <b>{fmt_pct(rec.volatility)}</b></span>',
     ]
+    if rec.confidence and rec.weight_range:
+        lo, hi = (f"{x:.0%}" for x in rec.weight_range)
+        span = lo if lo == hi else f"{lo}–{hi}"
+        chips.insert(2, f'<span class="chip conf-{rec.confidence}" title="10–90% range of the optimal weight '
+                        f'across resampled price histories">Confidence <b>{rec.confidence}</b> · {span}</span>')
     if rec.qty > 0 and rec.avg_price > 0:
         chips.append(f'<span class="chip">P&amp;L <b class="{pnl_cls}">{fmt_pct(rec.pnl_pct, 1, signed=True)}'
                      f' ({fmt_compact(rec.pnl, currency, signed=True)})</b></span>')
