@@ -50,7 +50,8 @@ Every holding gets reasons in four groups:
 
 ## Strategies
 
-- **Max Sharpe ratio**: best expected return per unit of risk, above the risk-free rate.
+- **Max Sharpe ratio**: best expected return per unit of risk, above the risk-free rate. Solved as a
+  convex problem (Cornuejols–Tütüncü), so it finds the global optimum, not just a local one.
 - **Minimum volatility**: the smoothest ride.
 - **Minimum tail risk (CVaR)**: smallest average loss on the worst 5% of days, solved exactly as a
   linear program (Rockafellar–Uryasev) on historical returns.
@@ -127,7 +128,8 @@ notebooks/                     Updated notebook + the original
 tests/                         pytest suite
 ```
 
-Run the tests with `pip install -r requirements-dev.txt && pytest`.
+Run the tests with `pip install -r requirements-dev.txt && pytest`. The dev requirements include cvxpy
+and scikit-learn for the reference cross-checks; those tests are skipped if they're missing.
 
 ## Caveats
 

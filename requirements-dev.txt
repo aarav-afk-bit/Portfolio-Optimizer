@@ -1,2 +1,5 @@
 -r requirements.txt
 pytest>=8
+# Reference implementations for tests/test_reference.py (skipped when missing)
+cvxpy>=1.4
+scikit-learn>=1.3

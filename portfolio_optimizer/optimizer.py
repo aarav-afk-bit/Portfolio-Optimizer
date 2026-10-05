@@ -209,6 +209,51 @@ def _min_cvar(returns: pd.DataFrame, tickers, c: Constraints, level: float = 0.9
     return w / w.sum()
 
 
+def _max_sharpe_exact(mu: pd.Series, sigma: np.ndarray, rf: float, tickers, c: Constraints) -> np.ndarray | None:
+    """Global max-Sharpe portfolio via the Cornuejols–Tütüncü convex reformulation.
+
+    Substituting y = kappa * w turns "maximise (mu - rf)'w / sqrt(w'Sw)" into
+    the convex QP "minimise y'Sy s.t. (mu - rf)'y = 1" with every linear limit
+    scaled by kappa, so any local solution is the global one. Returns None when
+    no feasible portfolio beats the risk-free rate (the reformulation needs a
+    positive excess return); the caller then falls back to direct search.
+    """
+    n = len(tickers)
+    ex = mu.to_numpy() - rf
+    # Best achievable excess return under the limits (LP) – must be positive.
+    rows, rhs = _linear_ub(tickers, c)
+    lp = linprog(-ex, A_ub=np.array(rows) if rows else None, b_ub=np.array(rhs) if rhs else None,
+                 A_eq=np.ones((1, n)), b_eq=[1.0], bounds=[(c.min_weight, c.max_weight)] * n, method="highs")
+    if not lp.success or -lp.fun <= 1e-9:
+        return None
+    w0 = lp.x
+    k0 = 1 / float(ex @ w0)
+    x0 = np.r_[w0 * k0, k0]
+
+    groups = list(c.class_groups(tickers).values())
+    cons = [
+        {"type": "eq", "fun": lambda x: ex @ x[:n] - 1.0, "jac": lambda x: np.r_[ex, 0.0]},
+        {"type": "eq", "fun": lambda x: x[:n].sum() - x[n], "jac": lambda x: np.r_[np.ones(n), -1.0]},
+        # lo*kappa <= y_i <= hi*kappa
+        {"type": "ineq", "fun": lambda x: c.max_weight * x[n] - x[:n],
+         "jac": lambda x: np.c_[-np.eye(n), np.full(n, c.max_weight)]},
+        {"type": "ineq", "fun": lambda x: x[:n] - c.min_weight * x[n],
+         "jac": lambda x: np.c_[np.eye(n), np.full(n, -c.min_weight)]},
+    ]
+    for ix in groups:
+        mask = np.zeros(n)
+        mask[ix] = 1
+        cons.append({"type": "ineq", "fun": lambda x, m=mask: c.class_cap * x[n] - m @ x[:n],
+                     "jac": lambda x, m=mask: np.r_[-m, c.class_cap]})
+    res = minimize(lambda x: x[:n] @ sigma @ x[:n], x0, jac=lambda x: np.r_[2 * sigma @ x[:n], 0.0],
+                   method="SLSQP", constraints=cons, bounds=[(0, None)] * (n + 1),
+                   options={"maxiter": 1000, "ftol": 1e-15})
+    if not res.success or res.x[n] <= 0:
+        return None
+    w = np.clip(res.x[:n] / res.x[n], c.min_weight, c.max_weight)
+    return w / w.sum()
+
+
 def optimize(
     mu: pd.Series,
     cov_annual: pd.DataFrame,
@@ -237,10 +282,16 @@ def optimize(
     vols = np.sqrt(np.diag(sigma))
     starts = _starts(tickers, c, n_starts)
 
+    exact = None
+    if strategy == "max_sharpe" and not c.turnover_active():
+        exact = _max_sharpe_exact(mu, sigma, rf, tickers, c)
+
     if strategy == "min_cvar":
         if returns is None:
             raise ValueError("Minimum CVaR needs daily returns.")
         w = _min_cvar(returns, tickers, c)
+    elif exact is not None:
+        w = exact
     else:
         if strategy == "max_sharpe":
             def obj(w):
