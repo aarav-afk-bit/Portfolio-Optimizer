@@ -102,6 +102,18 @@ def _driver_reason(strategy: str, t: str, action: str, ctx: dict) -> Reason:
     objective's improvement to each asset (see analytics.attribute_change)."""
     d = float(ctx["target_w"][t] - ctx["current_w"][t])
 
+    if strategy == "hrp":
+        split = ctx["hrp_split"]
+        mine, other = (split["left"], split["right"]) if t in split["left"] else (split["right"], split["left"])
+        share = split["left_share"] if t in split["left"] else 1 - split["left_share"]
+        peers = [label_for(x) for x in mine if x != t]
+        group = f"with {', '.join(peers)}" if peers else "on its own"
+        low_risk = share >= 0.5
+        return Reason("positive" if (d > 0) == low_risk else "neutral", "Optimiser",
+                      f"HRP groups holdings that move together and splits money between groups by their risk. "
+                      f"It sits {group} in the {'lower' if low_risk else 'higher'}-risk group, which gets "
+                      f"{fmt_pct(share, 0)} of the portfolio; within a group, steadier holdings get more.")
+
     if strategy == "risk_parity":
         rc, fair = float(ctx["risk_share"][t]), 1 / len(ctx["tickers"])
         rc_tgt = float(ctx["risk_share_target"][t])

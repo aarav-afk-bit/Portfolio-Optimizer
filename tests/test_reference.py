@@ -1,15 +1,16 @@
 """Cross-checks against independent implementations (skipped when not installed).
 
-    pip install cvxpy scikit-learn
+    pip install cvxpy scikit-learn pyportfolioopt
 """
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from portfolio_optimizer import analytics as an
 from portfolio_optimizer.config import DEFAULT_PORTFOLIO, TRADING_DAYS, asset_class_for
 from portfolio_optimizer.data import demo_prices
-from portfolio_optimizer.optimizer import Constraints, optimize
+from portfolio_optimizer.optimizer import Constraints, hrp_weights, optimize
 
 TICKERS = list(DEFAULT_PORTFOLIO)
 CLASSES = {t: asset_class_for(t) for t in TICKERS}
@@ -79,3 +80,12 @@ def test_min_cvar_matches_cvxpy(data):
     cvar = alpha + cp.sum(cp.pos(-r @ w - alpha)) / (0.05 * len(r))
     cp.Problem(cp.Minimize(cvar), cons).solve()
     assert an.historical_cvar(ours.weights.to_numpy(), rets) <= an.historical_cvar(w.value, rets) + 1e-7
+
+
+def test_hrp_matches_pyportfolioopt(data):
+    hrp_mod = pytest.importorskip("pypfopt.hierarchical_portfolio")
+    rets, _, cov = data
+    # Pass only the covariance: given returns, HRPOpt would cluster on the sample covariance instead.
+    ref = hrp_mod.HRPOpt(cov_matrix=cov).optimize(linkage_method="single")
+    ours = hrp_weights(cov.to_numpy(), "single")
+    np.testing.assert_allclose(ours, pd.Series(ref)[TICKERS].to_numpy(), atol=1e-8)

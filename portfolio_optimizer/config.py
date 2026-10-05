@@ -43,6 +43,7 @@ STRATEGIES: dict[str, str] = {
     "min_volatility": "Minimum volatility",
     "min_cvar": "Minimum tail risk (CVaR)",
     "risk_parity": "Risk parity",
+    "hrp": "Hierarchical risk parity",
     "max_diversification": "Max diversification",
 }
 

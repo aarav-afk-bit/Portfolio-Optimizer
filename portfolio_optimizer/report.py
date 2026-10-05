@@ -13,8 +13,8 @@ from .config import (DEFAULT_MAX_WEIGHT, DEFAULT_MIN_WEIGHT, DEFAULT_RISK_FREE_R
                      asset_class_for)
 from .formatting import currency_symbol
 from .indicators import TechnicalSnapshot, technical_snapshot
-from .optimizer import (Constraints, OptimizationResult, ResampleResult, efficient_frontier, evaluate, optimize,
-                        random_portfolios, resample)
+from .optimizer import (Constraints, OptimizationResult, ResampleResult, efficient_frontier, evaluate,
+                        hrp_top_split, optimize, random_portfolios, resample)
 from .reasons import AssetRecommendation, Reason, build_recommendations, cash_flow, portfolio_reasons
 
 
@@ -175,6 +175,7 @@ def analyze(
         capped_classes=_capped_classes(optimal.weights, classes, s.class_cap),
         max_turnover=s.max_turnover, optimal_turnover=float((optimal.weights - w_cur).abs().sum() / 2),
         resample=rs,
+        hrp_split=_hrp_split(cov, tickers) if s.strategy == "hrp" else None,
         cvar_current=an.historical_cvar(w_cur.to_numpy(), returns),
         cvar_target=an.historical_cvar(target.weights.to_numpy(), returns),
         eff_current=an.effective_holdings(w_cur.to_numpy()),
@@ -240,3 +241,8 @@ def compare_strategies(mu: pd.Series, cov: pd.DataFrame, rf: float, cons: Constr
             "Turnover": float((w - w_cur).abs().sum() / 2),
         }
     return pd.DataFrame(rows).T, pd.DataFrame(weights).T
+
+
+def _hrp_split(cov: pd.DataFrame, tickers: list[str]) -> dict:
+    left, right, share = hrp_top_split(cov.to_numpy())
+    return {"left": [tickers[i] for i in left], "right": [tickers[i] for i in right], "left_share": share}
