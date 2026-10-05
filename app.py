@@ -11,6 +11,7 @@ from portfolio_optimizer import analytics as an, charts, ui
 from portfolio_optimizer.config import (DEFAULT_BENCHMARK, DEFAULT_PORTFOLIO, DEFAULT_RISK_FREE_RATE,
                                         STRATEGIES, asset_class_for, label_for)
 from portfolio_optimizer.data import DataError, clean_prices, demo_prices, fetch_prices, fetch_prices_nse_github
+from portfolio_optimizer.estimators import RETURN_MODELS, RISK_MODELS, View
 from portfolio_optimizer.formatting import fmt_compact, fmt_pct
 from portfolio_optimizer.report import PortfolioReport, Settings, analyze
 
@@ -160,11 +161,27 @@ with st.sidebar:
             min_w = st.slider("Min position size", 0, 20, 0, step=1, format="%d%%")
             start = st.date_input("History from", dt.date(2022, 1, 1), max_value=dt.date.today())
             ret_method = st.selectbox(
-                "Expected returns", ["bayes_stein", "historical"],
-                format_func={"bayes_stein": "Bayes–Stein shrinkage (robust)",
-                             "historical": "Historical average (raw)"}.get,
-                help="Raw historical averages make the optimiser chase whatever rallied most. "
-                     "Shrinkage pulls extreme estimates toward the group average.")
+                "Expected returns", list(RETURN_MODELS), format_func=RETURN_MODELS.get,
+                help="Black–Litterman starts from the return each holding's risk deserves and lets your price "
+                     "history nudge it, so one hot streak can't dominate. Bayes–Stein shrinks raw averages "
+                     "toward each other. Raw averages chase whatever rallied most.")
+            prior_sharpe = st.slider("Long-run Sharpe for the prior", 0.1, 1.0, 0.4, 0.05,
+                                     disabled=ret_method != "black_litterman",
+                                     help="Return per unit of risk you expect over the long run. 0.3–0.5 is "
+                                          "typical for diversified equity.")
+            st.caption("Your return views (Black–Litterman): e.g. HAL.NS, 15% a year, 60% confident.")
+            views_df = st.data_editor(
+                pd.DataFrame({"Ticker": pd.Series(dtype=str), "Return %": pd.Series(dtype=float),
+                              "Confidence %": pd.Series(dtype=float)}),
+                num_rows="dynamic", hide_index=True, width="stretch", key="views_editor",
+                disabled=ret_method != "black_litterman",
+                column_config={"Return %": st.column_config.NumberColumn(min_value=-50.0, max_value=100.0,
+                                                                         format="%.1f"),
+                               "Confidence %": st.column_config.NumberColumn(min_value=1.0, max_value=99.0,
+                                                                             format="%.0f")})
+            risk_model = st.selectbox("Risk model", list(RISK_MODELS), format_func=RISK_MODELS.get,
+                                      help="EWMA weights recent volatility more, so the plan reacts faster "
+                                           "when markets get calmer or rougher.")
             benchmark = st.text_input("Benchmark", DEFAULT_BENCHMARK).strip()
             run_bt = st.toggle("Walk-forward backtest", True)
             reb = st.selectbox("Backtest rebalancing", [21, 63, 126], index=1,
@@ -172,6 +189,17 @@ with st.sidebar:
             cost = st.number_input("Trading cost (bps per trade)", 0.0, 100.0, 10.0, 5.0)
 
         st.form_submit_button("Analyse portfolio", type="primary", width="stretch")
+
+def parse_views(df: pd.DataFrame) -> tuple[View, ...]:
+    """Rows with a ticker and a return become views; missing confidence defaults to 50%."""
+    out = []
+    for _, row in df.dropna(subset=["Ticker", "Return %"]).iterrows():
+        ticker = str(row["Ticker"]).strip().upper()
+        if ticker:
+            conf = row["Confidence %"] if pd.notna(row["Confidence %"]) else 50.0
+            out.append(View(ticker, float(row["Return %"]) / 100, float(conf) / 100))
+    return tuple(out)
+
 
 # Validate holdings
 h = edited.copy()
@@ -198,6 +226,8 @@ settings = Settings(
     class_cap=None if class_cap >= 100 else class_cap / 100,
     max_turnover=None if max_to >= 100 else max_to / 100,
     no_trade_band=band / 100, robust=robust, n_resamples=n_res,
+    risk_model=risk_model, prior_sharpe=prior_sharpe,
+    views=parse_views(views_df),
 )
 items = tuple((t, float(q), float(a), c) for t, q, a, c in h[HOLDING_COLS].to_numpy())
 
@@ -593,14 +623,16 @@ with TAB_BT:
 with TAB_METHOD:
     st.markdown(f"""
 #### How the plan is built
-1. **Prices.** Daily adjusted closes from Yahoo Finance since {start:%b %Y}, aligned across holdings.
-2. **Risk model.** Daily covariance with **Ledoit–Wolf shrinkage** of the correlations. Raw sample correlations
-   from a few years of data are noisy, and optimisers amplify that noise.
-3. **Expected returns.** **Bayes–Stein shrinkage** pulls each holding's historical average toward the
-   group mean. The original notebook used raw averages, which let one hot asset dominate.
-4. **Optimisation.** Long-only, fully invested, with your min/max position limits, solved with SLSQP from
-   several starting points. Sharpe ratios are measured against a **{rf:.2f}% risk-free rate**
-   (the original used 0%, which flatters every risky asset).
+1. **Prices.** Daily adjusted closes from Yahoo Finance since {start:%b %Y}, aligned across holdings. If Yahoo is
+   unreachable, NSE holdings use real prices from NSE's daily reports via GitHub (eod2_data).
+2. **Risk model.** Daily covariance with **Ledoit–Wolf shrinkage** of the correlations (or **EWMA** volatilities,
+   which weight recent days more). Raw sample correlations are noisy, and optimisers amplify that noise.
+3. **Expected returns.** By default **Black–Litterman**: each holding starts at the return its risk deserves at
+   a long-run Sharpe ratio, and your price history moves it only as far as its precision justifies. Add your
+   own views in Advanced settings. Bayes–Stein shrinkage and raw averages are also available.
+4. **Optimisation.** Long-only and fully invested, within your limits. Max Sharpe is solved as a convex problem,
+   so the answer is the global optimum (checked against cvxpy on real data). Hierarchical risk parity clusters
+   holdings by correlation instead. Sharpe ratios are measured against a **{rf:.2f}% risk-free rate**.
 5. **Limits.** Position caps, asset-class caps and a turnover limit are enforced in every strategy,
    the frontier and the backtest. Impossible combinations are caught up front with the exact
    minimum you'd need (e.g. "your limits require trading at least 30%").

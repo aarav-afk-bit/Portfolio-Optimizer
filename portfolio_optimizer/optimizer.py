@@ -12,6 +12,7 @@ from scipy.spatial.distance import squareform
 
 from . import analytics as an
 from .config import TRADING_DAYS
+from .estimators import Estimator
 
 
 @dataclass
@@ -441,6 +442,7 @@ def resample(
     n_samples: int = 100,
     mu_method: str = "bayes_stein",
     seed: int = 7,
+    estimator: Estimator | None = None,
 ) -> ResampleResult:
     """Re-run the optimiser on ``n_samples`` bootstrapped histories.
 
@@ -449,13 +451,13 @@ def resample(
     that is far less sensitive to that noise.
     """
     rng = np.random.default_rng(seed)
+    est = estimator or Estimator(return_model=mu_method, rf=rf)
     tickers = list(returns.columns)
     check_feasible(tickers, constraints)
     rows = []
     for _ in range(n_samples):
         sample = block_bootstrap(returns, rng)
-        cov = an.ledoit_wolf_covariance(sample)
-        mu = an.expected_returns(sample, cov, mu_method)
+        mu, cov = est.fit(sample)
         try:
             res = optimize(mu, cov * TRADING_DAYS, strategy, rf, constraints=constraints, returns=sample,
                            n_starts=2, check=False)

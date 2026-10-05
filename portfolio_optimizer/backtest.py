@@ -15,6 +15,7 @@ import pandas as pd
 
 from . import analytics as an
 from .config import TRADING_DAYS
+from .estimators import Estimator
 from .optimizer import Constraints, optimize
 
 
@@ -57,6 +58,7 @@ def walk_forward(
     benchmark: pd.Series | None = None,
     mu_method: str = "bayes_stein",
     constraints: Constraints | None = None,
+    estimator: Estimator | None = None,
 ) -> BacktestResult:
     """``constraints`` (asset-class caps, turnover limit) apply at every rebalance;
     the turnover limit is measured from the weights held just before it. The
@@ -69,11 +71,11 @@ def walk_forward(
 
     cur = current_weights.reindex(returns.columns).fillna(0).to_numpy()
     base = constraints or Constraints(min_weight=min_weight, max_weight=max_weight)
+    est = estimator or Estimator(return_model=mu_method, rf=rf)
 
     def optimised(i: int, held: np.ndarray | None) -> np.ndarray:
         window = returns.iloc[i - lookback:i]
-        cov = an.ledoit_wolf_covariance(window)
-        mu = an.expected_returns(window, cov, mu_method)
+        mu, cov = est.fit(window)
         start_w = cur if held is None else held
         c = replace(base, current=pd.Series(start_w, index=returns.columns))
         res = optimize(mu, cov * TRADING_DAYS, strategy, rf, constraints=c, returns=window, n_starts=4)
