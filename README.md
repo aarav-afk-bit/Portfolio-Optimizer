@@ -105,6 +105,23 @@ to real daily prices from NSE's own reports via the community
 splits and bonuses but not dividends, and updated weekly. Synthetic demo data is the last resort and is
 clearly labelled.
 
+## Tested on real data
+
+`scripts/real_data_check.py` downloads real prices and runs every strategy walk-forward (no hindsight).
+Latest results are in [docs/real_data_results.md](docs/real_data_results.md). In summary:
+
+- **Solver accuracy:** max-Sharpe and min-volatility optima match cvxpy to 4 decimals on all three
+  datasets. HRP, Black–Litterman and Ledoit–Wolf match PyPortfolioOpt and scikit-learn
+  (`tests/test_reference.py`).
+- **Max Sharpe beats rebalanced equal weight out of sample on all three datasets**: your holdings
+  (Sharpe 1.29 vs 1.17), Indian ETFs + HAL 2020–2026 (1.03 vs 0.90), and 15 US stocks 2004–2018
+  (0.66 vs 0.52, worst drawdown −46% vs −54%).
+- **Black–Litterman vs Bayes–Stein** is a trade-off. Black–Litterman trades about 30% less and did best
+  on the long US sample, which includes 2008. Bayes–Stein did better on the shorter Indian samples by
+  leaning into the 2020–2026 bull run.
+
+`tests/test_real_data.py` repeats the key checks on live NSE data whenever the network allows.
+
 ## What changed from the original notebook
 
 The original is kept at `notebooks/Portfolio_Optimiser_original.ipynb`.
@@ -131,6 +148,7 @@ portfolio_optimizer/
   estimators.py                Black–Litterman, EWMA, Ledoit–Wolf, Bayes–Stein
   analytics.py                 Risk metrics, attribution
   optimizer.py                 Strategies (exact max Sharpe, HRP, CVaR LP, ...), limits, resampling
+scripts/real_data_check.py     Walk-forward validation on real data
   indicators.py                RSI, MACD, Bollinger, signal score
   reasons.py                   Actions and plain-English reasons
   backtest.py                  Walk-forward backtest
