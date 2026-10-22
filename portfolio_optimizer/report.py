@@ -10,8 +10,9 @@ import pandas as pd
 from . import analytics as an
 from .backtest import BacktestResult, walk_forward
 from .config import (DEFAULT_MAX_WEIGHT, DEFAULT_MIN_WEIGHT, DEFAULT_RISK_FREE_RATE, STRATEGIES, TRADING_DAYS,
-                     asset_class_for)
+                     asset_class_for, label_for)
 from .estimators import Estimator, View
+from .data import HistoryLimit, history_limit
 from .formatting import currency_symbol
 from .indicators import TechnicalSnapshot, technical_snapshot
 from .optimizer import (Constraints, OptimizationResult, ResampleResult, efficient_frontier, evaluate,
@@ -84,6 +85,7 @@ class PortfolioReport:
     backtest: BacktestResult | None = None
     benchmark: pd.Series | None = None
     notes: list[str] = field(default_factory=list)
+    history: HistoryLimit | None = None  # the holding that cut the shared price history short, if any
 
 
 def analyze(
@@ -94,9 +96,19 @@ def analyze(
 ) -> PortfolioReport:
     s = settings or Settings()
     tickers = list(holdings)
+    # First date each holding has a price: from the loader when it cleaned the data, else from the input.
+    first_valid = prices.attrs.get("first_valid") or {t: prices[t].first_valid_index() for t in tickers}
     prices = prices[tickers].dropna(how="any")
+    history = history_limit({t: first_valid.get(t) for t in tickers}, prices.index[-1])
     rf = s.risk_free_rate
-    notes: list[str] = []
+    notes: list[str] = [f"Uses {len(prices)} trading days of prices shared by every holding "
+                        f"({prices.index[0]:%d %b %Y} – {prices.index[-1]:%d %b %Y})."]
+    if history is not None and history.share_lost > 0.05:
+        notes.append(
+            f"History starts {history.start:%d %b %Y} because {label_for(history.ticker)} ({history.ticker}) only has "
+            f"prices from then. Without it the analysis could start {history.start_without:%d %b %Y}: "
+            f"{history.days_without - history.days_used} more trading days ({history.share_lost:.0%} of the "
+            f"history is unused).")
 
     returns = an.daily_returns(prices)
     est = s.estimator()
@@ -224,7 +236,7 @@ def analyze(
         frontier=efficient_frontier(mu, cov, constraints=cons), cloud=random_portfolios(mu, cov, rf),
         risk_share_current=risk_cur, risk_share_target=risk_tgt, asset_stats=asset_stats,
         portfolio_stats=portfolio_stats, technicals=technicals, recommendations=recs, summary=summary,
-        backtest=bt, benchmark=benchmark, notes=notes,
+        backtest=bt, benchmark=benchmark, notes=notes, history=history,
     )
 
 

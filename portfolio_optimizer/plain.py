@@ -85,3 +85,20 @@ def plan_steps(recs, current, target, currency: str) -> list[str]:
         f"({biggest_now.label}) to {fmt_pct(biggest_after.target_weight, 0)} ({biggest_after.label})."
     )
     return steps
+
+
+SHORT_HISTORY_THRESHOLD = 0.25  # warn when one holding hides more than a quarter of the history
+
+
+def history_warning(history) -> str | None:
+    """Plain-English warning when one holding cuts the shared price history short."""
+    if history is None or history.share_lost <= SHORT_HISTORY_THRESHOLD:
+        return None
+    from .config import label_for
+
+    name = label_for(history.ticker)
+    return (f"Short price history: {name} ({history.ticker}) only has prices from {history.start:%d %b %Y}, so the "
+            f"whole analysis uses {history.years_used:.1f} years instead of the "
+            f"{history.days_without / 252:.1f} years your other holdings have ({history.share_lost:.0%} unused). "
+            f"Estimates are noisier with less history, so treat the target weights as a direction and consider "
+            f"moving gradually. Removing {name} from the holdings would let the others use their full history.")

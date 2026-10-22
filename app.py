@@ -10,6 +10,7 @@ import streamlit as st
 from portfolio_optimizer import analytics as an, charts, ui
 from portfolio_optimizer.config import (DEFAULT_BENCHMARK, DEFAULT_PORTFOLIO, DEFAULT_RISK_FREE_RATE,
                                         STRATEGIES, asset_class_for, label_for)
+from portfolio_optimizer.plain import history_warning
 from portfolio_optimizer.data import DataError, clean_prices, demo_prices, fetch_prices, fetch_prices_nse_github
 from portfolio_optimizer.estimators import RETURN_MODELS, RISK_MODELS, View
 from portfolio_optimizer.formatting import fmt_compact, fmt_pct
@@ -268,6 +269,9 @@ if warning:
     st.warning(warning, icon="⚠️")
 
 cur, tgt = r.current, r.target
+short_history = history_warning(r.history)
+if short_history:
+    st.info(short_history, icon=":material/history_toggle_off:")
 st.html('<div class="kpis">' + "".join([
     ui.kpi("Portfolio value", fmt_compact(r.total_value, sym),
            f'<span class="{"up" if pnl >= 0 else "down"}">{fmt_compact(pnl, sym, signed=True)}</span> '

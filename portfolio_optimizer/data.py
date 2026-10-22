@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 
@@ -84,15 +86,57 @@ def fetch_prices_nse_github(tickers: list[str], start: str, end: str | None = No
 
 def clean_prices(prices: pd.DataFrame) -> pd.DataFrame:
     """Align calendars: forward-fill short gaps (holidays), then drop the
-    leading rows before every asset has started trading."""
+    leading rows before every asset has started trading.
+
+    Each column's first available date is kept in ``attrs["first_valid"]``
+    so the report can say which holding cut the history short.
+    """
     prices = prices.sort_index().ffill(limit=5)
+    first_valid = {c: prices[c].first_valid_index() for c in prices.columns}
     prices = prices.dropna(how="any")
     if len(prices) < 60:
         raise DataError(
             "Fewer than 60 overlapping trading days. Use an earlier start date "
             "or drop recently listed tickers."
         )
+    prices.attrs["first_valid"] = {c: d for c, d in first_valid.items() if d is not None}
     return prices
+
+
+@dataclass(frozen=True)
+class HistoryLimit:
+    """The holding whose late start sets the common start of the price history."""
+
+    ticker: str
+    start: pd.Timestamp  # first date the analysis uses
+    start_without: pd.Timestamp  # first date it could use without that holding
+    end: pd.Timestamp
+    days_used: int  # trading days used
+    days_without: int  # trading days available without that holding
+
+    @property
+    def share_lost(self) -> float:
+        return 1 - self.days_used / self.days_without if self.days_without else 0.0
+
+    @property
+    def years_used(self) -> float:
+        return self.days_used / TRADING_DAYS
+
+
+def history_limit(first_valid: dict, end: pd.Timestamp) -> HistoryLimit | None:
+    """Which holding starts latest, and how much shared history it costs.
+
+    Returns None when fewer than two holdings have dates or when the latest
+    start is shared (no single holding is to blame).
+    """
+    dates = sorted((pd.Timestamp(d), t) for t, d in first_valid.items() if d is not None)
+    if len(dates) < 2 or dates[-1][0] <= dates[-2][0]:
+        return None
+    (start_without, _), (start, ticker) = dates[-2], dates[-1]
+    end = pd.Timestamp(end)
+    return HistoryLimit(ticker, start, start_without, end,
+                        days_used=len(pd.bdate_range(start, end)),
+                        days_without=len(pd.bdate_range(start_without, end)))
 
 
 # Rough annual drift / volatility plus factor loadings used to make the demo

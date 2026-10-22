@@ -6,6 +6,7 @@ import textwrap
 
 from .config import STRATEGIES
 from .formatting import fmt_money, fmt_pct
+from .plain import history_warning
 from .report import PortfolioReport
 
 ICON = {"positive": "+", "negative": "-", "neutral": "·"}
@@ -22,6 +23,9 @@ def render_text(r: PortfolioReport, demo: bool = False, width: int = 96) -> str:
                + (" · DEMO DATA" if demo else ""))
     out.append(f"Value {fmt_money(r.total_value, sym)}   "
                f"Unrealised P&L {fmt_money(r.total_value - r.total_invested, sym, signed=True)}")
+    short = history_warning(r.history)
+    if short:
+        out.append(wrap(f"! {short}"))
     out.append(f"{'':12}{'Return':>10}{'Volatility':>12}{'Sharpe':>9}")
     for name, res in (("Current", r.current), ("Target", r.target)):
         out.append(f"{name:12}{fmt_pct(res.expected_return):>10}{fmt_pct(res.volatility):>12}{res.sharpe:>9.2f}")
@@ -46,6 +50,6 @@ def render_text(r: PortfolioReport, demo: bool = False, width: int = 96) -> str:
 
     if r.notes:
         out.append("\nNOTES")
-        out.extend(f"  · {n}" for n in r.notes)
+        out.extend(textwrap.fill(n, width, initial_indent="  · ", subsequent_indent="    ") for n in r.notes)
     out.append("\nEducational tool, not investment advice.")
     return "\n".join(out)
