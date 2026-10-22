@@ -13,6 +13,7 @@ from portfolio_optimizer.config import (DEFAULT_BENCHMARK, DEFAULT_PORTFOLIO, DE
 from portfolio_optimizer.data import DataError, clean_prices, demo_prices, fetch_prices, fetch_prices_nse_github
 from portfolio_optimizer.estimators import RETURN_MODELS, RISK_MODELS, View
 from portfolio_optimizer.formatting import fmt_compact, fmt_pct
+from portfolio_optimizer.orders import build_orders, order_ticket, orders_frame
 from portfolio_optimizer.report import PortfolioReport, Settings, analyze
 
 st.set_page_config(page_title="Portfolio Optimizer", page_icon="📈", layout="wide",
@@ -350,6 +351,35 @@ with TAB_ACTION:
                                "Price": [round(x.price, 2) for x in recs], "Holding now": [x.qty for x in recs]})
         st.download_button("Trade list CSV", csv.to_csv(index=False), "rebalance_plan.csv",
                            "text/csv", icon=":material/download:", width="stretch")
+
+    if any(x.trade_qty for x in recs):
+        st.html('<div class="section-title" style="margin-top:18px">Order sheet</div>'
+                '<div class="section-sub">The orders to place, in order. Sells come first because they pay for the '
+                'buys. Holdings whose timing says “Stagger” or “Wait for dip” are split into weekly tranches, and '
+                'buys are paced alongside staggered sales so you never need much cash up front.</div>')
+        spread = st.toggle("Spread staggered trades over 3 weeks", True, key="spread_orders",
+                           help="Turn off to place every order now.")
+        orders = build_orders(recs, tranches=3 if spread else 1)
+        sheet = orders_frame(orders)
+        st.dataframe(
+            sheet.drop(columns=["Approx. price", "Asset"]), hide_index=True, width="stretch",
+            column_config={
+                "Date": st.column_config.DateColumn(format="ddd D MMM"),
+                "Units": st.column_config.NumberColumn(format="%,d"),
+                "Approx. value": st.column_config.NumberColumn(format=f"{sym}%,d"),
+                "Cash after": st.column_config.NumberColumn(
+                    format=f"{sym}%,d", help="Running cash from the sales so far, minus the buys so far. Negative "
+                                             "means new money is needed at that point."),
+                "Note": st.column_config.TextColumn(width="large"),
+            },
+        )
+        d1, d2, _ = st.columns([1, 1, 2])
+        with d1:
+            st.download_button("Order sheet CSV", sheet.to_csv(index=False), "orders.csv", "text/csv",
+                               icon=":material/download:", width="stretch")
+        with d2:
+            st.download_button("Printable order sheet", order_ticket(orders, sym), "orders.txt", "text/plain",
+                               icon=":material/print:", width="stretch")
 
     if strategy not in ("risk_parity", "hrp"):
         obj = {"max_sharpe": "Sharpe ratio", "min_volatility": "volatility (pp)", "min_cvar": "daily CVaR (pp)",
