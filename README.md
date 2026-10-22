@@ -17,7 +17,13 @@ python -m portfolio_optimizer --demo   # same, with synthetic prices (no interne
 
 Edit your holdings in the sidebar, or import them from a CSV (`Ticker, Qty, Avg price`, optional `Class`)
 via **Import / export holdings**. Tickers use Yahoo Finance symbols (`.NS` for NSE, `.BO` for BSE).
-Add a ticker with quantity 0 to see whether it's worth buying. Position, asset-class and turnover limits,
+Add a ticker with quantity 0 to see whether it's worth buying.
+
+Pick a **style**: **Cautious** (smoothest ride, moves halfway, tight caps), **Balanced** (best return for
+the risk with guard rails) or **Growth** (best return for the risk, loose limits). That's all most people
+need. **Show all settings** reveals every expert control, starting from the style you picked. If a style's
+limits can't work with your holdings (say, a 30% cap with only two holdings), they're loosened and the
+app tells you. Position, asset-class and turnover limits,
 the no-trade band and robust resampling are under **Limits & robustness**.
 
 ## What you get
