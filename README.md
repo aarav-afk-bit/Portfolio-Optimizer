@@ -22,6 +22,8 @@ the no-trade band and robust resampling are under **Limits & robustness**.
 
 ## What you get
 
+At the bottom of the page, **Download report (HTML)** saves the whole plan (verdict, trades and reasons) as one self-contained page: it opens offline, prints cleanly and can be emailed.
+
 | Tab | What it shows |
 |---|---|
 | **Verdict** | One-line recommendation plus the portfolio-level case for rebalancing |
@@ -95,6 +97,7 @@ among its reasons. Weights that your limits pin down are reported as such.
 python -m portfolio_optimizer --strategy min_cvar --max-weight 0.4 --class-cap 0.5 --max-turnover 0.3
 python -m portfolio_optimizer --no-robust --no-trade-band 0.03 --demo
 python -m portfolio_optimizer --source github --view HAL.NS=0.15:0.6 --risk-model ewma
+python -m portfolio_optimizer --source github --html plan.html   # shareable one-page report
 ```
 
 ### Price data

@@ -28,6 +28,7 @@ def main() -> None:
     p.add_argument("--source", choices=["yahoo", "github", "demo"], default="yahoo",
                    help="price source: Yahoo Finance, NSE data on GitHub (eod2_data), or synthetic")
     p.add_argument("--demo", action="store_true", help="same as --source demo")
+    p.add_argument("--html", metavar="PATH", help="also save a shareable one-page HTML report")
     args = p.parse_args()
 
     tickers = list(DEFAULT_PORTFOLIO)
@@ -48,6 +49,12 @@ def main() -> None:
 
     report = analyze(DEFAULT_PORTFOLIO, data[tickers], s, data[DEFAULT_BENCHMARK])
     print(render_text(report, demo=source == "demo"))
+    if args.html:
+        from pathlib import Path
+
+        from .export import report_html
+        Path(args.html).write_text(report_html(report, demo=source == "demo"), encoding="utf-8")
+        print(f"Saved HTML report to {args.html}")
 
 
 def parse_view(text: str) -> View:

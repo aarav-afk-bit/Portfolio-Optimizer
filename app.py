@@ -12,6 +12,7 @@ from portfolio_optimizer.config import (DEFAULT_BENCHMARK, DEFAULT_PORTFOLIO, DE
                                         STRATEGIES, asset_class_for, label_for)
 from portfolio_optimizer.data import DataError, clean_prices, demo_prices, fetch_prices, fetch_prices_nse_github
 from portfolio_optimizer.estimators import RETURN_MODELS, RISK_MODELS, View
+from portfolio_optimizer.export import report_html
 from portfolio_optimizer.formatting import fmt_compact, fmt_pct
 from portfolio_optimizer.report import PortfolioReport, Settings, analyze
 
@@ -664,4 +665,14 @@ with TAB_METHOD:
     if r.notes:
         st.markdown("#### Estimation diagnostics\n" + "\n".join(f"- {n}" for n in r.notes))
 
+st.divider()
+c1, c2 = st.columns([3, 1], vertical_alignment="center")
+with c1:
+    st.html('<div class="section-title">Share or keep this plan</div>'
+            '<div class="section-sub">One self-contained page with the verdict, trades and reasons. Opens offline, '
+            'prints cleanly, and can be emailed.</div>')
+with c2:
+    st.download_button("Download report (HTML)", report_html(r, demo=used_source == DEMO),
+                       f"portfolio-plan-{r.as_of:%Y-%m-%d}.html", "text/html", icon=":material/download:",
+                       type="primary", width="stretch")
 st.html('<div class="footnote">Built with Python · SciPy · Plotly · Streamlit. Not investment advice.</div>')
