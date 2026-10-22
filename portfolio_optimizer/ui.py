@@ -243,3 +243,27 @@ def rec_card(rec: AssetRecommendation, currency: str, scale: float) -> str:
 
 def plan_steps(steps: list[str]) -> str:
     return '<ol class="steps">' + "".join(f"<li><span>{escape(s)}</span></li>" for s in steps) + "</ol>"
+
+
+# Injected after CSS when Streamlit is in dark mode: same layout, dark tokens.
+DARK_CSS = """
+<style>
+:root {
+  --ink: #e6edf3; --ink-2: #c3c9d4; --muted: #8b95a7;
+  --line: #2a3242; --surface: #161b26; --page: #0d1117;
+  --blue: #3987e5; --blue-soft: #162a45; --orange: #d95926;
+  --good: #4ade80; --good-soft: #12321f; --bad: #f87171; --bad-soft: #3a1717;
+  --warn: #fbbf24; --warn-soft: #3a2a0f; --neutral-soft: #1f2633;
+  --shadow: 0 1px 2px rgba(0,0,0,.35);
+}
+[data-testid="stHeader"] { background: rgba(13,17,23,.85); }
+.hero { border: 1px solid #22314d; }
+.chip { background: #1c2230; }
+.wtrack { background: #242b38; }
+ul.reasons li { border-top-color: var(--line); }
+.chip.conf-High { border-color: #1f5a35; }
+.chip.conf-Medium { border-color: #6b4e12; }
+.chip.conf-Low { border-color: #6b2525; }
+.tldr b { color: #9ec5f4; }
+</style>
+"""

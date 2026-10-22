@@ -22,6 +22,8 @@ the no-trade band and robust resampling are under **Limits & robustness**.
 
 ## What you get
 
+The dashboard follows your light or dark setting (system, or ⋮ → Settings → Theme), charts included.
+
 | Tab | What it shows |
 |---|---|
 | **Verdict** | One-line recommendation plus the portfolio-level case for rebalancing |
