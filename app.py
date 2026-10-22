@@ -71,12 +71,25 @@ def run(holdings_items: tuple, benchmark: str, start: str, source: str, settings
 
 HOLDING_COLS = ["Ticker", "Qty", "Avg price", "Class"]
 
+from portfolio_optimizer import sharing  # noqa: E402  (kept beside the only code that uses it)
+
 if "holdings_df" not in st.session_state:
     st.session_state.holdings_df = pd.DataFrame(
         [{"Ticker": t, "Qty": v["qty"], "Avg price": v["avg_price"], "Class": asset_class_for(t)}
          for t, v in DEFAULT_PORTFOLIO.items()]
     )
     st.session_state.editor_version = 0
+    # Opened from a portfolio link? Load its holdings instead of the defaults.
+    if sharing.PARAM in st.query_params:
+        try:
+            st.session_state.holdings_df = sharing.decode_holdings(st.query_params[sharing.PARAM])
+            st.session_state.link_loaded = True
+        except ValueError as e:
+            st.session_state.link_error = str(e)
+if st.session_state.pop("link_loaded", False):
+    st.toast("Loaded the portfolio from your link.", icon=":material/link:")
+if link_error := st.session_state.pop("link_error", None):
+    st.warning(f"Couldn't open the portfolio link: {link_error} Showing the default portfolio instead.", icon="⚠️")
 
 
 def load_holdings_csv(file) -> pd.DataFrame:
@@ -101,6 +114,11 @@ with st.sidebar:
     st.caption("Enter your holdings, pick a strategy, and get a rebalancing plan with the reasons behind it.")
 
     with st.popover("Import / export holdings", icon=":material/upload_file:", width="stretch"):
+        st.markdown("**Link to this portfolio**")
+        st.code(sharing.share_url(st.context.url, st.session_state.holdings_df), language=None, wrap_lines=True)
+        st.caption("Copy it (icon on the right) and bookmark or share it to reopen these holdings later. It contains "
+                   "your tickers, quantities and average prices, so anyone with the link can see them. It reflects "
+                   "the holdings as of the last Analyse.")
         up = st.file_uploader("Upload a CSV with Ticker, Qty, Avg price (Class optional)", type="csv")
         if up is not None and st.session_state.get("uploaded_id") != up.file_id:
             try:
