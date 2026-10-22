@@ -13,6 +13,7 @@ from portfolio_optimizer.config import (DEFAULT_BENCHMARK, DEFAULT_PORTFOLIO, DE
 from portfolio_optimizer.data import DataError, clean_prices, demo_prices, fetch_prices, fetch_prices_nse_github
 from portfolio_optimizer.estimators import RETURN_MODELS, RISK_MODELS, View
 from portfolio_optimizer.formatting import fmt_compact, fmt_pct
+from portfolio_optimizer.presets import DEFAULT_PRESET, PRESETS, fit_to_holdings
 from portfolio_optimizer.report import PortfolioReport, Settings, analyze
 
 st.set_page_config(page_title="Portfolio Optimizer", page_icon="📈", layout="wide",
@@ -98,7 +99,7 @@ def load_holdings_csv(file) -> pd.DataFrame:
 
 with st.sidebar:
     st.markdown("### 📈 Portfolio Optimizer")
-    st.caption("Enter your holdings, pick a strategy, and get a rebalancing plan with the reasons behind it.")
+    st.caption("Enter your holdings, pick a style, and get a rebalancing plan with the reasons behind it.")
 
     with st.popover("Import / export holdings", icon=":material/upload_file:", width="stretch"):
         up = st.file_uploader("Upload a CSV with Ticker, Qty, Avg price (Class optional)", type="csv")
@@ -112,6 +113,15 @@ with st.sidebar:
                 st.error(f"Couldn't read that file: {e}")
         st.download_button("Download current holdings", st.session_state.holdings_df.to_csv(index=False),
                            "holdings.csv", "text/csv", icon=":material/download:", width="stretch")
+
+    st.markdown("**Your style**")
+    preset_name = st.segmented_control("Your style", list(PRESETS), default=DEFAULT_PRESET, key="preset",
+                                       label_visibility="collapsed") or DEFAULT_PRESET
+    preset = PRESETS[preset_name]
+    st.caption(preset.blurb)
+    expert = st.toggle("Show all settings", False,
+                       help="Fine-tune the strategy, limits, return model and backtest. Values start from the style "
+                            "you picked.")
 
     with st.form("inputs", border=False):
         st.markdown("**Holdings**")
@@ -129,64 +139,80 @@ with st.sidebar:
         st.caption("Use Yahoo symbols (`.NS` for NSE, `.BO` for BSE). Add a ticker with quantity 0 "
                    "to test whether it's worth buying.")
 
-        st.markdown("**Strategy**")
-        strategy = st.selectbox("Optimise for", list(STRATEGIES), format_func=STRATEGIES.get,
-                                help="Max Sharpe: best return per unit of risk. Min volatility: smoothest ride. "
-                                     "Min tail risk: smallest average loss on the worst 5% of days. "
-                                     "Risk parity: every holding contributes equal risk. Max diversification: "
-                                     "holdings that offset each other.")
-        max_w = st.slider("Max position size", 10, 100, 40, step=5, format="%d%%",
-                          help="Caps any single holding. Prevents the optimiser going all-in on one asset.")
-        intensity = st.slider("Rebalance intensity", 10, 100, 100, step=10, format="%d%%",
-                              help="100% moves fully to the optimal weights; 50% goes halfway.")
         source = st.radio("Price data", [LIVE, DEMO], horizontal=True)
+        if expert:
+            st.markdown("**Strategy**")
+            strategy = st.selectbox("Optimise for", list(STRATEGIES), format_func=STRATEGIES.get,
+                                    index=list(STRATEGIES).index(preset.strategy), key=f"strategy_{preset.name}",
+                                    help="Max Sharpe: best return per unit of risk. Min volatility: smoothest ride. "
+                                         "Min tail risk: smallest average loss on the worst 5% of days. "
+                                         "Risk parity: every holding contributes equal risk. Max diversification: "
+                                         "holdings that offset each other.")
+            max_w = st.slider("Max position size", 10, 100, int(round(preset.max_weight * 100)), step=5, format="%d%%",
+                              key=f"max_w_{preset.name}",
+                              help="Caps any single holding. Prevents the optimiser going all-in on one asset.")
+            intensity = st.slider("Rebalance intensity", 10, 100, int(round(preset.rebalance_intensity * 100)), step=5,
+                                  format="%d%%", key=f"intensity_{preset.name}",
+                                  help="100% moves fully to the optimal weights; 50% goes halfway.")
 
-        with st.expander("Limits & robustness", icon=":material/tune:"):
-            class_cap = st.slider("Max per asset class", 20, 100, 100, step=5, format="%d%%",
-                                  help="Caps the total weight of each asset class (see the Class column). "
-                                       "100% = no cap.")
-            max_to = st.slider("Max turnover per rebalance", 5, 100, 100, step=5, format="%d%%",
-                               help="Limits how much of the portfolio is bought (and sold) in one go. "
-                                    "100% = no limit.")
-            band = st.slider("No-trade band", 0.0, 10.0, 2.0, step=0.5, format="%.1f pp",
-                             help="Skip trades that would move a holding's weight by less than this.")
-            robust = st.toggle("Robust (resampled) weights", True,
-                               help="Re-optimise on many bootstrapped price histories and average the results. "
-                                    "Gives steadier targets and a confidence range for every weight.")
-            n_res = st.select_slider("Resamples", [50, 100, 200], 100, disabled=not robust)
+            with st.expander("Limits & robustness", icon=":material/tune:"):
+                class_cap = st.slider("Max per asset class", 20, 100, int(round((preset.class_cap or 1) * 100)), step=5,
+                                      format="%d%%", key=f"class_cap_{preset.name}",
+                                      help="Caps the total weight of each asset class (see the Class column). "
+                                           "100% = no cap.")
+                max_to = st.slider("Max turnover per rebalance", 5, 100, 100, step=5, format="%d%%",
+                                   help="Limits how much of the portfolio is bought (and sold) in one go. "
+                                        "100% = no limit.")
+                band = st.slider("No-trade band", 0.0, 10.0, preset.no_trade_band * 100, step=0.5, format="%.1f pp",
+                                 key=f"band_{preset.name}",
+                                 help="Skip trades that would move a holding's weight by less than this.")
+                robust = st.toggle("Robust (resampled) weights", True,
+                                   help="Re-optimise on many bootstrapped price histories and average the results. "
+                                        "Gives steadier targets and a confidence range for every weight.")
+                n_res = st.select_slider("Resamples", [50, 100, 200], 100, disabled=not robust)
 
-        with st.expander("Advanced settings", icon=":material/settings:"):
-            rf = st.number_input("Risk-free rate (% a year)", 0.0, 15.0, DEFAULT_RISK_FREE_RATE * 100, 0.25,
-                                 help="Sharpe ratios measure return above this. Default ≈ Indian 91-day T-bill.")
-            min_w = st.slider("Min position size", 0, 20, 0, step=1, format="%d%%")
-            start = st.date_input("History from", dt.date(2022, 1, 1), max_value=dt.date.today())
-            ret_method = st.selectbox(
-                "Expected returns", list(RETURN_MODELS), format_func=RETURN_MODELS.get,
-                help="Black–Litterman starts from the return each holding's risk deserves and lets your price "
-                     "history nudge it, so one hot streak can't dominate. Bayes–Stein shrinks raw averages "
-                     "toward each other. Raw averages chase whatever rallied most.")
-            prior_sharpe = st.slider("Long-run Sharpe for the prior", 0.1, 1.0, 0.4, 0.05,
-                                     disabled=ret_method != "black_litterman",
-                                     help="Return per unit of risk you expect over the long run. 0.3–0.5 is "
-                                          "typical for diversified equity.")
-            st.caption("Your return views (Black–Litterman): e.g. HAL.NS, 15% a year, 60% confident.")
-            views_df = st.data_editor(
-                pd.DataFrame({"Ticker": pd.Series(dtype=str), "Return %": pd.Series(dtype=float),
-                              "Confidence %": pd.Series(dtype=float)}),
-                num_rows="dynamic", hide_index=True, width="stretch", key="views_editor",
-                disabled=ret_method != "black_litterman",
-                column_config={"Return %": st.column_config.NumberColumn(min_value=-50.0, max_value=100.0,
-                                                                         format="%.1f"),
-                               "Confidence %": st.column_config.NumberColumn(min_value=1.0, max_value=99.0,
-                                                                             format="%.0f")})
-            risk_model = st.selectbox("Risk model", list(RISK_MODELS), format_func=RISK_MODELS.get,
-                                      help="EWMA weights recent volatility more, so the plan reacts faster "
-                                           "when markets get calmer or rougher.")
-            benchmark = st.text_input("Benchmark", DEFAULT_BENCHMARK).strip()
-            run_bt = st.toggle("Walk-forward backtest", True)
-            reb = st.selectbox("Backtest rebalancing", [21, 63, 126], index=1,
-                               format_func={21: "Monthly", 63: "Quarterly", 126: "Half-yearly"}.get)
-            cost = st.number_input("Trading cost (bps per trade)", 0.0, 100.0, 10.0, 5.0)
+            with st.expander("Advanced settings", icon=":material/settings:"):
+                rf = st.number_input("Risk-free rate (% a year)", 0.0, 15.0, DEFAULT_RISK_FREE_RATE * 100, 0.25,
+                                     help="Sharpe ratios measure return above this. Default ≈ Indian 91-day T-bill.")
+                min_w = st.slider("Min position size", 0, 20, 0, step=1, format="%d%%")
+                start = st.date_input("History from", dt.date(2022, 1, 1), max_value=dt.date.today())
+                ret_method = st.selectbox(
+                    "Expected returns", list(RETURN_MODELS), format_func=RETURN_MODELS.get,
+                    help="Black–Litterman starts from the return each holding's risk deserves and lets your price "
+                         "history nudge it, so one hot streak can't dominate. Bayes–Stein shrinks raw averages "
+                         "toward each other. Raw averages chase whatever rallied most.")
+                prior_sharpe = st.slider("Long-run Sharpe for the prior", 0.1, 1.0, 0.4, 0.05,
+                                         disabled=ret_method != "black_litterman",
+                                         help="Return per unit of risk you expect over the long run. 0.3–0.5 is "
+                                              "typical for diversified equity.")
+                st.caption("Your return views (Black–Litterman): e.g. HAL.NS, 15% a year, 60% confident.")
+                views_df = st.data_editor(
+                    pd.DataFrame({"Ticker": pd.Series(dtype=str), "Return %": pd.Series(dtype=float),
+                                  "Confidence %": pd.Series(dtype=float)}),
+                    num_rows="dynamic", hide_index=True, width="stretch", key="views_editor",
+                    disabled=ret_method != "black_litterman",
+                    column_config={"Return %": st.column_config.NumberColumn(min_value=-50.0, max_value=100.0,
+                                                                             format="%.1f"),
+                                   "Confidence %": st.column_config.NumberColumn(min_value=1.0, max_value=99.0,
+                                                                                 format="%.0f")})
+                risk_model = st.selectbox("Risk model", list(RISK_MODELS), format_func=RISK_MODELS.get,
+                                          help="EWMA weights recent volatility more, so the plan reacts faster "
+                                               "when markets get calmer or rougher.")
+                benchmark = st.text_input("Benchmark", DEFAULT_BENCHMARK).strip()
+                run_bt = st.toggle("Walk-forward backtest", True)
+                reb = st.selectbox("Backtest rebalancing", [21, 63, 126], index=1,
+                                   format_func={21: "Monthly", 63: "Quarterly", 126: "Half-yearly"}.get)
+                cost = st.number_input("Trading cost (bps per trade)", 0.0, 100.0, 10.0, 5.0)
+
+        else:
+            strategy, max_w = preset.strategy, int(round(preset.max_weight * 100))
+            intensity = int(round(preset.rebalance_intensity * 100))
+            class_cap = int(round((preset.class_cap or 1) * 100))
+            band, max_to, robust, n_res = preset.no_trade_band * 100, 100, True, 100
+            rf, min_w, start = DEFAULT_RISK_FREE_RATE * 100, 0, dt.date(2022, 1, 1)
+            ret_method, prior_sharpe, risk_model = "black_litterman", 0.4, "ledoit_wolf"
+            views_df = pd.DataFrame({"Ticker": [], "Return %": [], "Confidence %": []})
+            benchmark, run_bt, reb, cost = DEFAULT_BENCHMARK, True, 63, 10.0
 
         st.form_submit_button("Analyse portfolio", type="primary", width="stretch")
 
@@ -219,6 +245,12 @@ if len(dupes):
     st.stop()
 st.session_state.holdings_df = edited
 
+preset_notes: list[str] = []
+if not expert:
+    fitted, preset_notes = fit_to_holdings(preset, list(h["Ticker"]), dict(zip(h["Ticker"], h["Class"])))
+    max_w = int(round(fitted.max_weight * 100))
+    class_cap = int(round((fitted.class_cap or 1) * 100))
+
 settings = Settings(
     strategy=strategy, risk_free_rate=rf / 100, min_weight=min_w / 100, max_weight=max_w / 100,
     return_method=ret_method, rebalance_intensity=intensity / 100, run_backtest=run_bt,
@@ -247,7 +279,8 @@ recs = sorted(r.recommendations, key=lambda x: -abs(x.trade_value))
 # --------------------------------------------------------------------------
 
 pnl = r.total_value - r.total_invested
-pills = [(STRATEGIES[strategy], ""), (f"Prices to {r.as_of:%d %b %Y}", ""),
+pills = [(f"{preset.name} style" if not expert else "Custom settings", ""),
+         (STRATEGIES[strategy], ""), (f"Prices to {r.as_of:%d %b %Y}", ""),
          (f"{len(r.tickers)} holdings", ""), (f"Max position {max_w}%", "")]
 if settings.class_cap:
     pills.append((f"Max {class_cap}% per class", ""))
@@ -266,6 +299,8 @@ st.html(ui.hero(
 ))
 if warning:
     st.warning(warning, icon="⚠️")
+for note in preset_notes:
+    st.info(note, icon=":material/tune:")
 
 cur, tgt = r.current, r.target
 st.html('<div class="kpis">' + "".join([
