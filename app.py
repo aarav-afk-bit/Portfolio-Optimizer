@@ -11,9 +11,9 @@ from portfolio_optimizer import analytics as an, charts, ui
 from portfolio_optimizer.config import (DEFAULT_BENCHMARK, DEFAULT_PORTFOLIO, DEFAULT_RISK_FREE_RATE,
                                         STRATEGIES, asset_class_for, label_for)
 from portfolio_optimizer.data import DataError, clean_prices, demo_prices, fetch_prices, fetch_prices_nse_github
+from portfolio_optimizer.glossary import GROUPS, search, tip
 from portfolio_optimizer.estimators import RETURN_MODELS, RISK_MODELS, View
 from portfolio_optimizer.formatting import fmt_compact, fmt_pct
-from portfolio_optimizer.glossary import GROUPS, search, tip
 from portfolio_optimizer.report import PortfolioReport, Settings, analyze
 
 st.set_page_config(page_title="Portfolio Optimizer", page_icon="📈", layout="wide",
