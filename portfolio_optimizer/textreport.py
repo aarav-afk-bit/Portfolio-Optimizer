@@ -26,6 +26,9 @@ def render_text(r: PortfolioReport, demo: bool = False, width: int = 96) -> str:
     for name, res in (("Current", r.current), ("Target", r.target)):
         out.append(f"{name:12}{fmt_pct(res.expected_return):>10}{fmt_pct(res.volatility):>12}{res.sharpe:>9.2f}")
 
+    out.append("\nYOUR PLAN")
+    out.extend(wrap(f"{i}. {step}") for i, step in enumerate(r.plan, 1))
+
     out.append("\nWHY REBALANCE")
     out.extend(wrap(f"{ICON[x.kind]} {x.text}") for x in r.summary)
 
@@ -38,6 +41,7 @@ def render_text(r: PortfolioReport, demo: bool = False, width: int = 96) -> str:
             conf = f" · confidence {rec.confidence.lower()} ({lo if lo == hi else f'{lo}–{hi}'})"
         out.append(f"    timing: {rec.timing} · technicals {rec.technical.stance.lower()} "
                    f"({rec.technical.score:+.0f}){conf}")
+        out.append(wrap(f"In short: {rec.summary}"))
         out.extend(wrap(f"{ICON[x.kind]} [{x.category}] {x.text}") for x in rec.reasons)
 
     if r.notes:
