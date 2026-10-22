@@ -34,6 +34,8 @@ the no-trade band and robust resampling are under **Limits & robustness**.
 | **Technicals** | Price with 50/200-day averages and Bollinger bands, RSI, MACD, and a −100…+100 score |
 | **Backtest** | Walk-forward test with no hindsight vs your current mix, equal weight and Nifty 50 |
 
+The Action plan also ends with an **estimated capital-gains tax** on the sales: Indian rates for listed equity and other ETFs, editable, with losses set off and the yearly equity exemption applied.
+
 ### The reasons
 
 Every holding gets reasons in four groups:
