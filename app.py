@@ -11,6 +11,7 @@ from portfolio_optimizer import analytics as an, charts, ui
 from portfolio_optimizer.config import (DEFAULT_BENCHMARK, DEFAULT_PORTFOLIO, DEFAULT_RISK_FREE_RATE,
                                         STRATEGIES, asset_class_for, label_for)
 from portfolio_optimizer.data import DataError, clean_prices, demo_prices, fetch_prices, fetch_prices_nse_github
+from portfolio_optimizer.glossary import GROUPS, search, tip
 from portfolio_optimizer.estimators import RETURN_MODELS, RISK_MODELS, View
 from portfolio_optimizer.formatting import fmt_compact, fmt_pct
 from portfolio_optimizer.report import PortfolioReport, Settings, analyze
@@ -274,18 +275,18 @@ st.html('<div class="kpis">' + "".join([
            f'unrealised ({fmt_pct(pnl / r.total_invested, 1, signed=True) if r.total_invested else "–"})'),
     ui.kpi("Expected return", ui.change(fmt_pct(cur.expected_return), fmt_pct(tgt.expected_return)),
            ui.delta(tgt.expected_return - cur.expected_return, lambda v: f"{v * 100:.1f} pp") + " a year",
-           "Annualised, after Bayes–Stein shrinkage of historical returns."),
+           tip("Expected return")),
     ui.kpi("Volatility", ui.change(fmt_pct(cur.volatility), fmt_pct(tgt.volatility)),
            ui.delta(tgt.volatility - cur.volatility, lambda v: f"{v * 100:.1f} pp", good_if_up=False),
-           "Annualised standard deviation of returns. Lower is a smoother ride."),
+           tip("Volatility")),
     ui.kpi("Sharpe ratio", ui.change(f"{cur.sharpe:.2f}", f"{tgt.sharpe:.2f}"),
            ui.delta(tgt.sharpe - cur.sharpe, lambda v: f"{v:.2f}"),
-           f"Excess return over the {rf:.2f}% risk-free rate per unit of volatility."),
+           tip("Sharpe ratio") + f" Safe rate used: {rf:.2f}%."),
     ui.kpi("Worst drawdown", ui.change(fmt_pct(r.portfolio_stats.loc['Current', 'max_drawdown'], 0),
                                        fmt_pct(r.portfolio_stats.loc['Target', 'max_drawdown'], 0)),
            ui.delta(r.portfolio_stats.loc['Target', 'max_drawdown'] - r.portfolio_stats.loc['Current', 'max_drawdown'],
                     lambda v: f"{v * 100:.1f} pp") + " over the period",
-           "Largest peak-to-trough fall the mix would have suffered over the price history."),
+           tip("Max drawdown")),
 ]) + "</div>")
 
 # Verdict
@@ -318,7 +319,7 @@ st.html(f'<div class="card verdict"><div><div class="hero-eyebrow" style="color:
 tabs = st.tabs([":material/checklist: Action plan", ":material/donut_large: Allocation", ":material/shield: Risk",
                 ":material/show_chart: Efficient frontier", ":material/compare_arrows: Compare strategies",
                 ":material/science: What-if", ":material/candlestick_chart: Technicals",
-                ":material/history: Backtest", ":material/info: Method"])
+                ":material/history: Backtest", ":material/menu_book: Guide"])
 TAB_ACTION, TAB_ALLOC, TAB_RISK, TAB_FRONTIER, TAB_COMPARE, TAB_WHATIF, TAB_TECH, TAB_BT, TAB_METHOD = tabs
 
 with TAB_ACTION:
@@ -627,7 +628,36 @@ with TAB_BT:
         st.plotly_chart(charts.backtest_weights_chart(r), config=PLOTLY_CONFIG, theme=None)
 
 with TAB_METHOD:
-    st.markdown(f"""
+    st.html('<div class="section-title">How to read this page in one minute</div>')
+    st.markdown("""
+1. **The verdict** at the top says what to do and why, in a few lines.
+2. **The five numbers** compare your portfolio now (grey) with the plan (black): expected return, how much it
+   swings (volatility), return for the risk (Sharpe), and the worst fall over the period.
+3. **Action plan** lists the trades. Each holding card starts with a one-line reason; open **Why** for the rest.
+4. **Timing** never changes how much to trade, only when: *Stagger* means spread it over a few weeks.
+5. **Confidence** tells you how sure the model is about a holding's size. When it's *Low*, move gradually.
+6. **Backtest** is the honesty check: how the strategy would have done without hindsight.
+
+Hover over the ⓘ icons for quick definitions. Everything is explained below.
+""")
+    st.html('<div class="section-title" style="margin-top:14px">Glossary</div>'
+            '<div class="section-sub">Every term the app uses, in plain words.</div>')
+    query = st.text_input("Search the glossary", placeholder="e.g. drawdown, Sharpe, confidence",
+                          label_visibility="collapsed", key="glossary_q")
+    terms = search(query)
+    if not terms:
+        st.caption("No matching terms.")
+    for group in GROUPS:
+        in_group = [t for t in terms if t.group == group]
+        if not in_group:
+            continue
+        with st.expander(f"{group} · {len(in_group)}", expanded=bool(query)):
+            for t in in_group:
+                st.markdown(f"**{t.name}**: {t.short}" + (f" {t.plain}" if t.plain else "")
+                            + (f"  \n*Example: {t.example}*" if t.example else ""))
+
+    with st.expander("The maths, for the curious", icon=":material/functions:"):
+        st.markdown(f"""
 #### How the plan is built
 1. **Prices.** Daily adjusted closes from Yahoo Finance since {start:%b %Y}, aligned across holdings. If Yahoo is
    unreachable, NSE holdings use real prices from NSE's daily reports via GitHub (eod2_data).
@@ -654,14 +684,16 @@ with TAB_METHOD:
 10. **Backtest.** Walk-forward with trailing 12-month estimates, your limits, trading costs, and
     comparison to your current mix, equal weight and the benchmark. Each rebalance uses a single
     estimate (no resampling) to keep it fast.
+""")
+        if r.notes:
+            st.markdown("#### Estimation diagnostics\n" + "\n".join(f"- {n}" for n in r.notes))
 
-#### Caveats
+    st.html('<div class="section-title" style="margin-top:14px">Keep in mind</div>')
+    st.markdown("""
 - Expected returns are estimates from the past. They are the least reliable input, even after shrinkage.
-- Volatility and correlation assume the future resembles the sample period. Regimes change.
-- Taxes, exit loads and lot sizes are not modelled. Check capital-gains impact before selling.
+- Volatility and correlation assume the future resembles the sample period. Markets change.
+- Taxes, exit loads and lot sizes are not modelled. Check capital-gains tax before selling.
 - **Educational tool, not investment advice.**
 """)
-    if r.notes:
-        st.markdown("#### Estimation diagnostics\n" + "\n".join(f"- {n}" for n in r.notes))
 
 st.html('<div class="footnote">Built with Python · SciPy · Plotly · Streamlit. Not investment advice.</div>')
