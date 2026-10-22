@@ -15,14 +15,14 @@ python -m portfolio_optimizer   # text report in the terminal
 python -m portfolio_optimizer --demo   # same, with synthetic prices (no internet)
 ```
 
+The dashboard follows your light or dark setting (system, or ⋮ → Settings → Theme), charts included.
+
 Edit your holdings in the sidebar, or import them from a CSV (`Ticker, Qty, Avg price`, optional `Class`)
 via **Import / export holdings**. Tickers use Yahoo Finance symbols (`.NS` for NSE, `.BO` for BSE).
 Add a ticker with quantity 0 to see whether it's worth buying. Position, asset-class and turnover limits,
 the no-trade band and robust resampling are under **Limits & robustness**.
 
 ## What you get
-
-The dashboard follows your light or dark setting (system, or ⋮ → Settings → Theme), charts included.
 
 | Tab | What it shows |
 |---|---|
