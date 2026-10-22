@@ -15,6 +15,7 @@ import numpy as np
 from .config import STRATEGIES, label_for
 from .formatting import fmt_compact, fmt_money, fmt_pct
 from .indicators import TechnicalSnapshot
+from .plain import holding_summary
 
 HOLD_BAND = 0.02  # weight changes under 2 percentage points are not worth trading
 
@@ -52,6 +53,7 @@ class AssetRecommendation:
     headline: str
     contribution: float  # this asset's share of the objective's improvement
     reasons: list[Reason] = field(default_factory=list)
+    summary: str = ""  # one plain-English sentence: what to do and the main reason why
     confidence: str | None = None  # High | Medium | Low (resampling on) or None
     weight_range: tuple[float, float] | None = None  # 10th–90th percentile of resampled weights
 
@@ -357,6 +359,10 @@ def build_recommendations(ctx: dict) -> list[AssetRecommendation]:
             timing=timing, headline=_headline(action, cur_w, tgt_w, trade_qty, trade_val, sym),
             contribution=float(ctx["contrib"][t]), confidence=confidence, weight_range=w_range,
             reasons=reasons,
+            summary=holding_summary(
+                action, current_weight=cur_w, target_weight=tgt_w, risk_share=rc, expected_return=mu,
+                rf=ctx["rf"], avg_corr=rho, is_best=(t == best and len(tickers) > 1),
+                is_worst=(t == worst and len(tickers) > 1), optimal_zero=opt_w < 0.005, confidence=confidence),
         ))
     return recs
 

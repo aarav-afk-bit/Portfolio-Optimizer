@@ -16,6 +16,7 @@ from .formatting import currency_symbol
 from .indicators import TechnicalSnapshot, technical_snapshot
 from .optimizer import (Constraints, OptimizationResult, ResampleResult, efficient_frontier, evaluate,
                         hrp_top_split, optimize, random_portfolios, resample)
+from .plain import plan_steps
 from .reasons import AssetRecommendation, Reason, build_recommendations, cash_flow, portfolio_reasons
 
 
@@ -77,6 +78,7 @@ class PortfolioReport:
     comparison: pd.DataFrame | None = None  # metrics per strategy (point estimates)
     comparison_weights: pd.DataFrame | None = None  # weights per strategy
     cash: dict[str, float] = field(default_factory=dict)
+    plan: list[str] = field(default_factory=list)  # three plain-English steps
     frontier: pd.DataFrame | None = None
     cloud: pd.DataFrame | None = None
     backtest: BacktestResult | None = None
@@ -218,6 +220,7 @@ def analyze(
         total_invested=total_invested, current=current, optimal=optimal, target=target, min_vol=min_vol,
         point=point, asset_classes=classes, constraints=cons, resample=rs, comparison=comparison,
         comparison_weights=comparison_weights, cash=cash_flow(recs),
+        plan=plan_steps(recs, current, target, ctx["currency"]),
         frontier=efficient_frontier(mu, cov, constraints=cons), cloud=random_portfolios(mu, cov, rf),
         risk_share_current=risk_cur, risk_share_target=risk_tgt, asset_stats=asset_stats,
         portfolio_stats=portfolio_stats, technicals=technicals, recommendations=recs, summary=summary,

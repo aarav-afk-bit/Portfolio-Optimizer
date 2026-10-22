@@ -71,7 +71,7 @@ h1, h2, h3 { letter-spacing: -0.02em; }
 .section-sub { font-size: 13px; color: var(--ink-2); margin-bottom: 8px; }
 
 /* Verdict */
-.verdict { display: grid; grid-template-columns: 1.1fr 2fr; gap: 22px; }
+.verdict { display: grid; grid-template-columns: 1.15fr 1fr; gap: 28px; }
 @media (max-width: 900px) { .verdict { grid-template-columns: 1fr; } }
 .verdict-head { font-size: 20px; font-weight: 750; color: var(--ink); line-height: 1.3; letter-spacing: -0.02em; }
 .verdict-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
@@ -128,6 +128,19 @@ details.more[open] summary:after { content: " ▴"; }
 .chip.conf-High { background: var(--good-soft); border-color: #cdebd7; }
 .chip.conf-Medium { background: var(--warn-soft); border-color: #f6e2bd; }
 .chip.conf-Low { background: var(--bad-soft); border-color: #f5cfcf; }
+.tldr { background: var(--blue-soft); border-radius: 10px; padding: 10px 12px; margin: 10px 0 4px;
+  font-size: 14px; color: var(--ink); line-height: 1.45; }
+.tldr b { color: #1c5cab; }
+ol.steps { margin: 12px 0 0; padding: 0; list-style: none; counter-reset: step; }
+ol.steps li { counter-increment: step; display: grid; grid-template-columns: 26px 1fr; gap: 10px;
+  font-size: 14px; color: var(--ink); line-height: 1.45; margin: 0 0 10px; }
+ol.steps li:before { content: counter(step); width: 24px; height: 24px; border-radius: 50%; background: var(--blue);
+  color: #fff; font-weight: 700; font-size: 12px; display: inline-flex; align-items: center; justify-content: center; }
+details.why summary { cursor: pointer; font-size: 12px; font-weight: 700; color: var(--ink-2);
+  text-transform: uppercase; letter-spacing: .06em; margin-top: 12px; list-style: none; }
+details.why summary::-webkit-details-marker { display: none; }
+details.why summary:after { content: " ▾"; color: var(--muted); }
+details.why[open] summary:after { content: " ▴"; }
 .score { display: inline-block; min-width: 34px; text-align: center; font-weight: 700; }
 
 /* Tabs */
@@ -213,7 +226,7 @@ def rec_card(rec: AssetRecommendation, currency: str, scale: float) -> str:
     tech_summary = sum(r.kind == "positive" for r in tech), sum(r.kind == "negative" for r in tech)
 
     body = (
-        f'<div class="rgroup">Why</div>{reason_list(why)}'
+        f'<details class="why"><summary>Why · {len(why)} reasons</summary>{reason_list(why)}</details>'
         + (f'<details class="more"><summary>Timing &amp; technicals · {tech_summary[0]} bullish, '
            f'{tech_summary[1]} bearish</summary>{reason_list(tech, show_category=False)}</details>' if tech else "")
         + (f'<div class="rgroup">Your position</div>{reason_list(pos, show_category=False)}' if pos else "")
@@ -222,6 +235,11 @@ def rec_card(rec: AssetRecommendation, currency: str, scale: float) -> str:
         f'<div class="rec"><div class="rec-head"><div><div class="rec-ticker">{escape(rec.ticker)}</div>'
         f'<div class="rec-name">{escape(rec.label)} · {escape(rec.asset_class)}</div></div>{badge(rec.action)}</div>'
         f'<div class="rec-headline">{escape(rec.headline)}</div>'
-        f'{_wbar("Now", rec.current_weight, scale, "#eb6834")}{_wbar("Target", rec.target_weight, scale, "#2a78d6")}'
+        + (f'<div class="tldr"><b>In short.</b> {escape(rec.summary)}</div>' if rec.summary else "")
+        + f'{_wbar("Now", rec.current_weight, scale, "#eb6834")}{_wbar("Target", rec.target_weight, scale, "#2a78d6")}'
         f'<div class="chips">{"".join(chips)}</div>{body}</div>'
     )
+
+
+def plan_steps(steps: list[str]) -> str:
+    return '<ol class="steps">' + "".join(f"<li><span>{escape(s)}</span></li>" for s in steps) + "</ol>"

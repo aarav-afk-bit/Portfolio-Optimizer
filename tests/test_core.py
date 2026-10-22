@@ -198,3 +198,17 @@ def test_nse_github_rejects_non_nse_tickers_without_network():
     with pytest.raises(DataError) as e:
         fetch_prices_nse_github(["AAPL", "MSFT"], "2024-01-01")
     assert e.value.missing == ["AAPL", "MSFT"]
+
+
+def test_plain_english_summaries(prices):
+    r = analyze(DEFAULT_PORTFOLIO, prices[TICKERS], Settings(run_backtest=False, n_resamples=20))
+    verbs = {"Buy more": "Add more", "Initiate": "Start a position", "Trim": "Sell some", "Exit": "Sell all",
+             "Hold": "Keep as is"}
+    for rec in r.recommendations:
+        assert rec.summary.startswith(verbs[rec.action] + ":")
+        assert rec.summary.endswith(".") and "Sharpe" not in rec.summary  # no jargon in the short version
+    assert len(r.plan) == 3
+    sold = sum(-x.trade_value for x in r.recommendations if x.trade_qty < 0)
+    if sold:
+        assert r.plan[0].startswith("Sell ")
+    assert r.plan[2].startswith("Result:")

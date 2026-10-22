@@ -302,9 +302,14 @@ headline = (f"Shift toward {', '.join(x.label for x in recs if x.action in ('Buy
             "Rebalance toward holdings that offset each other.")
 if n_trades == 0:
     headline = "Your portfolio is already close to optimal. No trades needed."
+top_reasons, more_reasons = r.summary[:4], r.summary[4:]
 st.html(f'<div class="card verdict"><div><div class="hero-eyebrow" style="color:#2a78d6">The verdict</div>'
-        f'<div class="verdict-head">{headline}</div><div class="verdict-actions">{actions}</div></div>'
-        f'<div>{ui.reason_list(r.summary)}</div></div>')
+        f'<div class="verdict-head">{headline}</div><div class="verdict-actions">{actions}</div>'
+        f'<div class="rgroup" style="margin-top:16px">Your plan in 3 steps</div>{ui.plan_steps(r.plan)}</div>'
+        f'<div><div class="rgroup" style="margin-top:0">Why this plan</div>{ui.reason_list(top_reasons)}'
+        + (f'<details class="why"><summary>{len(more_reasons)} more</summary>{ui.reason_list(more_reasons)}</details>'
+           if more_reasons else "")
+        + '</div></div>')
 
 # --------------------------------------------------------------------------
 # Tabs
@@ -360,7 +365,8 @@ with TAB_ACTION:
         st.plotly_chart(charts.contribution_bars(r), config=PLOTLY_CONFIG, theme=None)
 
     st.html('<div class="section-title" style="margin-top:8px">Holding by holding</div>'
-            '<div class="section-sub">Sorted by trade size. Expand “Timing &amp; technicals” for chart signals.</div>')
+            '<div class="section-sub">Sorted by trade size. Each card starts with the short version; open '
+            '“Why” for every reason and “Timing &amp; technicals” for chart signals.</div>')
     scale = max(max(x.current_weight for x in recs), max(x.target_weight for x in recs), 0.01)
     cols = st.columns(2, gap="medium")
     for i, rec in enumerate(recs):
