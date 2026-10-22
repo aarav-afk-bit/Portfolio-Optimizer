@@ -33,6 +33,7 @@ the no-trade band and robust resampling are under **Limits & robustness**.
 | **What-if** | Type your own weights and see them scored against your current mix and the plan, with limit checks |
 | **Technicals** | Price with 50/200-day averages and Bollinger bands, RSI, MACD, and a −100…+100 score |
 | **Backtest** | Walk-forward test with no hindsight vs your current mix, equal weight and Nifty 50 |
+| **Guide** | How to read the page in one minute, a searchable plain-English glossary of every term, and the maths for the curious |
 
 ### The reasons
 
