@@ -25,7 +25,7 @@ the no-trade band and robust resampling are under **Limits & robustness**.
 | Tab | What it shows |
 |---|---|
 | **Verdict** | One-line recommendation plus the portfolio-level case for rebalancing |
-| **Action plan** | Trade list in units and rupees (CSV download), each holding's exact share of the improvement, and a card per holding with its reasons, and an **estimated capital-gains tax** on the sales (Indian rates, editable) |
+| **Action plan** | Trade list in units and rupees (CSV download), each holding's exact share of the improvement, and a card per holding with its reasons |
 | **Allocation** | Current vs target weights, asset-class mix, concentration metrics |
 | **Risk** | Share of capital vs share of risk, correlation heatmap, drawdowns, VaR/CVaR/Sortino/beta |
 | **Efficient frontier** | Random portfolios, the frontier under your limits, the capital market line, current → target |
@@ -33,6 +33,8 @@ the no-trade band and robust resampling are under **Limits & robustness**.
 | **What-if** | Type your own weights and see them scored against your current mix and the plan, with limit checks |
 | **Technicals** | Price with 50/200-day averages and Bollinger bands, RSI, MACD, and a −100…+100 score |
 | **Backtest** | Walk-forward test with no hindsight vs your current mix, equal weight and Nifty 50 |
+
+The Action plan also ends with an **estimated capital-gains tax** on the sales: Indian rates for listed equity and other ETFs, editable, with losses set off and the yearly equity exemption applied.
 
 ### The reasons
 
