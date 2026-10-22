@@ -159,7 +159,7 @@ notebooks/                     Updated notebook + the original
 tests/                         pytest suite
 ```
 
-Run the tests with `pip install -r requirements-dev.txt && pytest`. The dev requirements include cvxpy,
+Run the tests with `pip install -r requirements-dev.txt && pytest`. GitHub Actions runs lint and the full suite (Python 3.11 and 3.12) on every pull request, including `tests/test_app.py`, which runs the whole Streamlit app headlessly and fails if any tab raises an error. The dev requirements include cvxpy,
 scikit-learn and PyPortfolioOpt for the reference cross-checks; those tests are skipped if they're missing.
 
 ## Caveats
