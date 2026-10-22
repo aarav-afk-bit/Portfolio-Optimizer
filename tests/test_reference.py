@@ -83,8 +83,15 @@ def test_min_cvar_matches_cvxpy(data):
     assert an.historical_cvar(ours.weights.to_numpy(), rets) <= an.historical_cvar(w.value, rets) + 1e-7
 
 
-def test_hrp_matches_pyportfolioopt(data):
+def test_hrp_matches_pyportfolioopt(data, monkeypatch):
     hrp_mod = pytest.importorskip("pypfopt.hierarchical_portfolio")
+    import scipy.cluster.hierarchy as sch
+
+    # PyPortfolioOpt validates the method name against a private SciPy table that newer SciPy
+    # releases removed; restore it so the cross-check still runs there.
+    if not hasattr(sch, "_LINKAGE_METHODS"):
+        monkeypatch.setattr(sch, "_LINKAGE_METHODS", {"single": 0, "complete": 1, "average": 2, "centroid": 3,
+                                                      "median": 4, "ward": 5, "weighted": 6}, raising=False)
     rets, _, cov = data
     # Pass only the covariance: given returns, HRPOpt would cluster on the sample covariance instead.
     ref = hrp_mod.HRPOpt(cov_matrix=cov).optimize(linkage_method="single")
