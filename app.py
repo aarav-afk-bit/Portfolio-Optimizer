@@ -7,6 +7,7 @@ import datetime as dt
 import pandas as pd
 import streamlit as st
 
+from portfolio_optimizer.tax import EQUITY, OTHER, Sale, TaxRates, default_tax_type, estimate_tax
 from portfolio_optimizer import analytics as an, charts, ui
 from portfolio_optimizer.config import (DEFAULT_BENCHMARK, DEFAULT_PORTFOLIO, DEFAULT_RISK_FREE_RATE,
                                         STRATEGIES, asset_class_for, label_for)
@@ -372,6 +373,61 @@ with TAB_ACTION:
     for i, rec in enumerate(recs):
         with cols[i % 2]:
             st.html(ui.rec_card(rec, sym, scale))
+
+
+@st.fragment
+def tax_section():
+    sells = [x for x in recs if x.trade_qty < 0]
+    st.html('<div class="section-title" style="margin-top:18px">Estimated tax on these sales</div>'
+            '<div class="section-sub">A rough Indian capital-gains estimate so the plan\'s cost isn\'t a surprise. '
+            'Tick whether each holding was bought more than 12 months ago; adjust the rates if the rules or your '
+            'slab differ. Excludes surcharge and cess. Not tax advice.</div>')
+    if not sells:
+        st.caption("The plan doesn't sell anything, so there's no capital-gains tax.")
+        return
+    with st.expander("Tax rates", icon=":material/tune:"):
+        c = st.columns(5)
+        eq_s = c[0].number_input("Equity, ≤ 12 months (%)", 0.0, 50.0, 20.0, 0.5, key="tax_eq_s")
+        eq_l = c[1].number_input("Equity, > 12 months (%)", 0.0, 50.0, 12.5, 0.5, key="tax_eq_l")
+        ex = c[2].number_input(f"Equity exemption left this year ({sym})", 0, 1_000_000, 125_000, 5_000, key="tax_ex")
+        ot_s = c[3].number_input("Other ETFs, ≤ 12 months: your slab (%)", 0.0, 50.0, 30.0, 1.0, key="tax_ot_s")
+        ot_l = c[4].number_input("Other ETFs, > 12 months (%)", 0.0, 50.0, 12.5, 0.5, key="tax_ot_l")
+    rates = TaxRates(eq_s / 100, eq_l / 100, float(ex), ot_s / 100, ot_l / 100)
+    table = pd.DataFrame({
+        "Asset": [x.label for x in sells],
+        "Units sold": [-x.trade_qty for x in sells],
+        "Gain": [round(-x.trade_qty * (x.price - x.avg_price)) if x.avg_price > 0 else None for x in sells],
+        "Tax type": [default_tax_type(x.asset_class) for x in sells],
+        "Held > 12 months": [True] * len(sells),
+    }, index=[x.ticker for x in sells])
+    edited = st.data_editor(
+        table, width="stretch", key="tax_editor", disabled=["Asset", "Units sold", "Gain"],
+        column_config={
+            "Gain": st.column_config.NumberColumn(format=f"{sym}%,d", help="Units sold × (price − your average cost)"),
+            "Tax type": st.column_config.SelectboxColumn(
+                options=[EQUITY, OTHER], required=True,
+                help="Listed equity: Indian shares and Indian equity ETFs. Other: gold, silver and international "
+                     "ETFs, and similar listed units."),
+            "Held > 12 months": st.column_config.CheckboxColumn(help="Long-term if bought more than 12 months ago."),
+        })
+    est = estimate_tax([Sale(t, x.label, -x.trade_qty, x.price, x.avg_price, edited.at[t, "Tax type"],
+                             bool(edited.at[t, "Held > 12 months"])) for t, x in zip(edited.index, sells)], rates)
+    proceeds = sum(-x.trade_value for x in sells)
+    st.html('<div class="kpis" style="grid-template-columns:repeat(3,minmax(0,1fr))">' + "".join([
+        ui.kpi("Gain realised", fmt_compact(est.total_gain, sym, signed=True), f"on {fmt_compact(proceeds, sym)} of sales"),
+        ui.kpi("Estimated tax", fmt_compact(est.total_tax, sym),
+               f"{fmt_pct(est.total_tax / proceeds, 1)} of the sale proceeds" if proceeds else ""),
+        ui.kpi("Equity exemption used", fmt_compact(est.exemption_used, sym), f"of {fmt_compact(rates.equity_exemption, sym)}"),
+    ]) + "</div>")
+    for note in est.notes:
+        st.caption(note)
+    if est.total_tax > 0:
+        st.caption("Ways to pay less: sell gradually across financial years to use the exemption twice, wait until "
+                   "short-term holdings turn 12 months old, or rebalance with new money instead of selling.")
+
+
+with TAB_ACTION:
+    tax_section()
 
 with TAB_ALLOC:
     c1, c2 = st.columns([3, 2], gap="large")
