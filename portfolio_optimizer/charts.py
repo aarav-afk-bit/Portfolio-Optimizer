@@ -6,9 +6,13 @@ ramp for magnitude, blue↔red with a grey midpoint for polarity.
 
 from __future__ import annotations
 
+import contextvars
+import re
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import plotly.io as pio
 from plotly.subplots import make_subplots
 
 from . import analytics as an
@@ -29,6 +33,33 @@ GRID = "#eef0f3"
 AXIS = "#cbd5e1"
 SURFACE = "#ffffff"
 FONT = "Inter, system-ui, -apple-system, 'Segoe UI', sans-serif"
+
+# Dark mode: every light colour above maps to its dark counterpart. Series use the validated dark
+# steps of the same hues (all >= 3:1 on the dark surface); the blue magnitude ramp is reversed so low
+# values recede into the dark surface, as they recede into white in light mode.
+DARK_MAP = {
+    "#ffffff": "#161b26", "#0f172a": "#e6edf3", "#475569": "#c3c9d4", "#94a3b8": "#8b95a7",
+    "#eef0f3": "#242b38", "#cbd5e1": "#3a4354", "#c3cad5": "#4a5468", "#f0efec": "#383835",
+    "#2a78d6": "#3987e5", "#eb6834": "#d95926", "#1baf7a": "#199e70", "#eda100": "#c98500",
+    "#e87ba4": "#d55181", "#008300": "#008300", "#4a3aa7": "#9085e9", "#e34948": "#e66767",
+    "#d03b3b": "#e66767",
+    **dict(zip(BLUE_RAMP, BLUE_RAMP[::-1])),
+    "rgba(255,255,255,0.9)": "rgba(22,27,38,0.9)",
+}
+_COLOR = re.compile(r"#[0-9a-fA-F]{6}|rgba\(255,255,255,0\.9\)")
+_DARK = contextvars.ContextVar("portfolio_charts_dark", default=False)
+
+
+def use_dark(on: bool) -> None:
+    """Draw charts for a dark background for the rest of this script run (per session/thread)."""
+    _DARK.set(bool(on))
+
+
+def to_dark(fig: go.Figure) -> go.Figure:
+    """Recolour a finished light-theme figure for a dark background in one pass."""
+    text = _COLOR.sub(lambda m: DARK_MAP.get(m.group(0).lower(), m.group(0)), fig.to_json())
+    return pio.from_json(text)
+
 
 # Fixed roles for portfolio-level series so the same thing is the same colour on every chart.
 ROLE = {
@@ -59,7 +90,7 @@ def _base(fig: go.Figure, height: int = 380, legend: bool = True) -> go.Figure:
                      title_font=dict(color=INK_2, size=12), automargin=True, title_standoff=8)
     fig.update_yaxes(gridcolor=GRID, linecolor=AXIS, zerolinecolor=AXIS, tickfont=dict(color=MUTED),
                      title_font=dict(color=INK_2, size=12), automargin=True, title_standoff=8)
-    return fig
+    return to_dark(fig) if _DARK.get() else fig
 
 
 def _names(tickers) -> list[str]:

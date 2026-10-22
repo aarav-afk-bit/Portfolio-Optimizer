@@ -18,6 +18,11 @@ from portfolio_optimizer.report import PortfolioReport, Settings, analyze
 st.set_page_config(page_title="Portfolio Optimizer", page_icon="📈", layout="wide",
                    initial_sidebar_state="auto")
 st.html(ui.CSS)
+# Follow Streamlit's light/dark theme (system setting, or ⋮ → Settings): app CSS and every chart.
+DARK = getattr(st.context.theme, "type", None) == "dark"
+charts.use_dark(DARK)
+if DARK:
+    st.html(ui.DARK_CSS)
 
 PLOTLY_CONFIG = {"displaylogo": False, "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"]}
 LIVE, DEMO = "Live (Yahoo Finance)", "Demo (offline)"
