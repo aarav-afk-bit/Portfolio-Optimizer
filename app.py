@@ -13,8 +13,8 @@ from portfolio_optimizer.config import (DEFAULT_BENCHMARK, DEFAULT_PORTFOLIO, DE
 from portfolio_optimizer.data import DataError, clean_prices, demo_prices, fetch_prices, fetch_prices_nse_github
 from portfolio_optimizer.estimators import RETURN_MODELS, RISK_MODELS, View
 from portfolio_optimizer.formatting import fmt_compact, fmt_pct
-from portfolio_optimizer.orders import build_orders, order_ticket, orders_frame
 from portfolio_optimizer.report import PortfolioReport, Settings, analyze
+from portfolio_optimizer.orders import build_orders, order_ticket, orders_frame
 
 st.set_page_config(page_title="Portfolio Optimizer", page_icon="📈", layout="wide",
                    initial_sidebar_state="auto")
