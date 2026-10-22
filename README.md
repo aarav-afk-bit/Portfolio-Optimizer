@@ -20,6 +20,8 @@ via **Import / export holdings**. Tickers use Yahoo Finance symbols (`.NS` for N
 Add a ticker with quantity 0 to see whether it's worth buying. Position, asset-class and turnover limits,
 the no-trade band and robust resampling are under **Limits & robustness**.
 
+The same **Import / export holdings** menu has a **link to this portfolio**: bookmark or share it to reopen these holdings later (anyone with the link can see them).
+
 ## What you get
 
 | Tab | What it shows |
