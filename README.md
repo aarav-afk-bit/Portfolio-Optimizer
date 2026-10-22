@@ -25,7 +25,7 @@ the no-trade band and robust resampling are under **Limits & robustness**.
 | Tab | What it shows |
 |---|---|
 | **Verdict** | One-line recommendation plus the portfolio-level case for rebalancing |
-| **Action plan** | Trade list in units and rupees (CSV download), each holding's exact share of the improvement, and a card per holding with its reasons |
+| **Action plan** | Trade list in units and rupees, an **order sheet** (sells first, staggered buys paced with staggered sales, running cash; CSV or printable), each holding's exact share of the improvement, and a card per holding with its reasons |
 | **Allocation** | Current vs target weights, asset-class mix, concentration metrics |
 | **Risk** | Share of capital vs share of risk, correlation heatmap, drawdowns, VaR/CVaR/Sortino/beta |
 | **Efficient frontier** | Random portfolios, the frontier under your limits, the capital market line, current → target |
