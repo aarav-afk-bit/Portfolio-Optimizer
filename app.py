@@ -8,6 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from portfolio_optimizer import analytics as an, charts, ui
+from portfolio_optimizer.contribute import plan_contribution
 from portfolio_optimizer.config import (DEFAULT_BENCHMARK, DEFAULT_PORTFOLIO, DEFAULT_RISK_FREE_RATE,
                                         STRATEGIES, asset_class_for, label_for)
 from portfolio_optimizer.data import DataError, clean_prices, demo_prices, fetch_prices, fetch_prices_nse_github
@@ -567,7 +568,58 @@ def whatif_tab():
                     key="whatif_frontier")
 
 
+@st.fragment
+def new_money_section():
+    st.html('<div class="section-title">Add money instead of selling</div>'
+            '<div class="section-sub">Investing new money (a bonus, or a monthly SIP)? Put it into the holdings that are '
+            'below target and you rebalance without selling anything: no capital-gains tax, no exit costs.</div>')
+    c1, c2 = st.columns([1, 2.4], gap="large")
+    with c1:
+        amount = st.number_input(f"New money ({sym})", min_value=0, value=100_000, step=10_000, key="new_money")
+    if amount <= 0:
+        return
+    plan = plan_contribution(recs, tgt.weights, float(amount))
+    with c2:
+        st.html('<div class="kpis" style="grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:0">' + "".join([
+            ui.kpi("Off target", ui.change(fmt_pct(plan.gap_before, 0), fmt_pct(plan.gap_after, 0)),
+                   "share of the portfolio in the wrong place",
+                   "How much of the portfolio would still have to move to match the plan's target weights."),
+            ui.kpi("Invested", fmt_compact(plan.spent, sym), f"{fmt_compact(plan.left_over, sym)} left as cash"),
+            ui.kpi("Sold", fmt_compact(0, sym), "nothing, so no tax"),
+        ]) + "</div>")
+    if plan.buys.empty:
+        st.caption("Every holding is already at or above its target share; nothing to buy.")
+    else:
+        table = plan.buys.assign(**{"Share of money": plan.buys["value"] / plan.spent})
+        st.dataframe(
+            table.rename(columns={"ticker": "Ticker", "label": "Asset", "units": "Units", "price": "Price",
+                                  "value": "Value"}),
+            hide_index=True, width="stretch",
+            column_config={"Price": st.column_config.NumberColumn(format=f"{sym}%.2f"),
+                           "Value": st.column_config.NumberColumn(format=f"{sym}%,.0f"),
+                           "Units": st.column_config.NumberColumn(format="%,d"),
+                           "Share of money": st.column_config.ProgressColumn(format="percent", min_value=0,
+                                                                             max_value=1)})
+        st.caption("For a monthly SIP, split each month's amount in the same shares and re-check every few months.")
+    need = plan.needed_without_selling
+    if need == float("inf") or need > 3 * r.total_value:
+        heavy = max(recs, key=lambda x: x.current_weight - x.target_weight)
+        st.info(f"New money alone can't realistically reach the target: {heavy.label} is "
+                f"{fmt_pct(heavy.current_weight, 0)} of the portfolio against a target of "
+                f"{fmt_pct(heavy.target_weight, 0)}"
+                + (f", so it would take about {fmt_compact(need, sym)}" if need != float("inf") else "")
+                + ". Combining new money with a partial sale (see the Action plan) gets there faster.",
+                icon=":material/savings:")
+    elif need > 0:
+        st.caption(f"Investing about {fmt_compact(need, sym)} of new money would bring every holding to its target "
+                   f"without selling anything.")
+    if plan.stuck:
+        st.caption(f"The plan wants to exit {', '.join(plan.stuck)}; only selling does that.")
+    st.divider()
+
+
 with TAB_WHATIF:
+    new_money_section()
     whatif_tab()
 
 

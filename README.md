@@ -30,7 +30,7 @@ the no-trade band and robust resampling are under **Limits & robustness**.
 | **Risk** | Share of capital vs share of risk, correlation heatmap, drawdowns, VaR/CVaR/Sortino/beta |
 | **Efficient frontier** | Random portfolios, the frontier under your limits, the capital market line, current → target |
 | **Compare strategies** | Every strategy's optimum under the same limits: Sharpe, volatility and worst-day loss side by side, plus weights |
-| **What-if** | Type your own weights and see them scored against your current mix and the plan, with limit checks |
+| **What-if** | Type your own weights and see them scored against your current mix and the plan, with limit checks. Plus **Add money instead of selling**: what to buy with new money (or a SIP) so it rebalances with no sales, and how much it would take to reach the target that way |
 | **Technicals** | Price with 50/200-day averages and Bollinger bands, RSI, MACD, and a −100…+100 score |
 | **Backtest** | Walk-forward test with no hindsight vs your current mix, equal weight and Nifty 50 |
 
